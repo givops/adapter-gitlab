@@ -187,7 +187,7 @@ public final class GitLabTickets implements TicketProviderAdapter, TicketWriteAd
         } else try {
             if (projectId == null || projectId.isBlank()) { state = CapabilityInspection.State.UNKNOWN; reason = "project_not_selected"; }
             else {
-                JsonNode project = session.get(GitLabUrls.project(projectId));
+                JsonNode project = session.projectResource(GitLabUrls.project(projectId));
                 if (!projectId.equals(id(project, "id")) && !projectId.equals(text(project, "path_with_namespace", true)))
                     throw GitLabErrors.invalidResponse();
                 if (project.path("issues_enabled").isBoolean() && !project.path("issues_enabled").booleanValue()
@@ -197,7 +197,7 @@ public final class GitLabTickets implements TicketProviderAdapter, TicketWriteAd
                     state = CapabilityInspection.State.UNKNOWN; reason = "write_permission_requires_explicit_command";
                 } else {
                     session.collection(GitLabUrls.project(projectId) + (capability.endsWith("version-membership") ? "/milestones" : "/issues"),
-                            Map.of(), 1, 1, true);
+                            Map.of(), 1, 1, true, true);
                     state = CapabilityInspection.State.AVAILABLE; reason = "project_endpoint_readable";
                 }
             }
@@ -232,6 +232,19 @@ public final class GitLabTickets implements TicketProviderAdapter, TicketWriteAd
             gate.acceptedObjects(1);
             return result;
         }
+        JsonNode projectResource(String path) {
+            JsonNode result = parse(projectResponse(urls.detail(path)));
+            gate.acceptedObjects(1);
+            return result;
+        }
+        GitLabTransport.Response projectResponse(URI uri) {
+            var response = transport.getForCheck(uri, captured.token(), gate);
+            // GitLab hides inaccessible projects and their collection endpoints behind 404.
+            // Treat this scoped denial conservatively so the host invalidates private observations.
+            if (response.status() == 404) throw GitLabErrors.remoteStatus(403);
+            if (response.status() != 200) throw GitLabErrors.remoteStatus(response.status());
+            return response;
+        }
         JsonNode post(String path, Object payload) {
             byte[] body = mapper.writeValueAsBytes(payload);
             if (body.length > 65_536) throw limit();
@@ -250,7 +263,7 @@ public final class GitLabTickets implements TicketProviderAdapter, TicketWriteAd
         }
         ProjectObservation project(String externalId, String key) {
             definition.validateProject(externalId, key);
-            return project(get(GitLabUrls.project(externalId)), externalId, key);
+            return project(projectResource(GitLabUrls.project(externalId)), externalId, key);
         }
         ProjectObservation project(JsonNode row, String externalId, String key) {
             String receivedId = id(row, "id"); String path = text(row, "path_with_namespace", true);
@@ -259,11 +272,11 @@ public final class GitLabTickets implements TicketProviderAdapter, TicketWriteAd
                     || key != null && !key.equals(path)) throw GitLabErrors.invalidResponse();
             return new ProjectObservation(receivedId, path, text(row, "name", true), safeUrl(row, "web_url", "/" + path), clock.instant());
         }
-        List<JsonNode> collection(String path, Map<String,String> filters, int pageSize, int maximum, boolean probe) {
+        List<JsonNode> collection(String path, Map<String,String> filters, int pageSize, int maximum, boolean probe, boolean projectAccessRequired) {
             var result = new ArrayList<JsonNode>();
             for (int page = 1; page <= limits.maxPages(); page++) {
                 URI uri = urls.uri(path, filters, pageSize, page);
-                var response = transport.get(uri, captured.token(), gate);
+                var response = projectAccessRequired ? projectResponse(uri) : transport.get(uri, captured.token(), gate);
                 JsonNode rows = parse(response);
                 if (!rows.isArray() || rows.size() > pageSize) throw GitLabErrors.invalidResponse();
                 gate.acceptedObjects(rows.size());
@@ -275,7 +288,7 @@ public final class GitLabTickets implements TicketProviderAdapter, TicketWriteAd
         }
         List<VersionObservation> versions(String project) {
             var result = new ArrayList<VersionObservation>(); var ids = new LinkedHashSet<String>();
-            for (JsonNode row : collection(GitLabUrls.project(project) + "/milestones", Map.of("include_parent_milestones", "false"), PAGE_SIZE, limits.maxObjects(), false)) {
+            for (JsonNode row : collection(GitLabUrls.project(project) + "/milestones", Map.of("include_parent_milestones", "false"), PAGE_SIZE, limits.maxObjects(), false, true)) {
                 VersionObservation version = version(row, project);
                 if (!ids.add(version.externalVersionId())) throw GitLabErrors.invalidPagination();
                 result.add(version);
@@ -314,7 +327,7 @@ public final class GitLabTickets implements TicketProviderAdapter, TicketWriteAd
         List<IssueObservation> members(ProjectObservation project, String milestone) {
             var issues = new ArrayList<IssueObservation>(); var ids = new LinkedHashSet<IssueIdentity>();
             for (JsonNode row : collection(GitLabUrls.project(project.externalProjectId()) + "/milestones/" + numeric(milestone) + "/issues",
-                    Map.of(), PAGE_SIZE, limits.maxReleaseIssues(), false)) {
+                    Map.of(), PAGE_SIZE, limits.maxReleaseIssues(), false, false)) {
                 IssueObservation issue = issue(row, project);
                 if (!issue.releaseVersionIds().contains(milestone) || !ids.add(issue.identity())) throw GitLabErrors.invalidResponse();
                 issues.add(issue);
