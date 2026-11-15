@@ -14,11 +14,11 @@ import tools.jackson.databind.json.JsonMapper;
 /** One installable library; optional host domains may be configured independently. */
 @AutoConfiguration
 @EnableConfigurationProperties(GitLabProperties.class)
+@org.springframework.context.annotation.Import({GitLabConfiguration.ForgeConfiguration.class, GitLabConfiguration.TicketConfiguration.class})
 public class GitLabConfiguration {
     @Bean GitLabTicketDefinition gitLabTicketDefinition(GitLabProperties properties) { return new GitLabTicketDefinition(properties); }
     @Bean GitLabForgeDefinition gitLabForgeDefinition(GitLabProperties properties) { return new GitLabForgeDefinition(properties); }
 
-    @org.springframework.context.annotation.Configuration(proxyBeanMethods = false)
     @ConditionalOnBean(ForgeProperties.class)
     static class ForgeConfiguration {
         @Bean GitLabTransport gitLabForgeTransport(ForgeProperties limits) { return new GitLabTransport(limits.requestTimeout(), limits.maxResponseBytes()); }
@@ -39,7 +39,6 @@ public class GitLabConfiguration {
             return new GitLabForgeCapabilities(gitLabForgeTransport, json, clock);
         }
     }
-    @org.springframework.context.annotation.Configuration(proxyBeanMethods = false)
     @ConditionalOnBean({CredentialHost.class, ContextSigner.class, TicketProperties.class})
     static class TicketConfiguration {
         @Bean GitLabTransport gitLabTicketTransport(TicketProperties limits) { return new GitLabTransport(limits.requestTimeout(), limits.maxResponseBytes()); }
