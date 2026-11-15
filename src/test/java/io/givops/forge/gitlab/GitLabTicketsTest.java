@@ -136,7 +136,7 @@ class GitLabTicketsTest {
         var fixture = fixture(request -> new GitLabTestFixture.Reply(status, Map.of(), "synthetic-sensitive-provider-body"));
         assertCode(() -> adapter(fixture).read(input(Set.of(), null), new Gate()), expected);
     }
-    @ParameterizedTest @CsvSource({"200,AVAILABLE", "403,FORBIDDEN", "404,UNKNOWN", "503,TEMPORARILY_UNAVAILABLE", "429,TEMPORARILY_UNAVAILABLE"})
+    @ParameterizedTest @CsvSource({"200,AVAILABLE", "403,FORBIDDEN", "404,FORBIDDEN", "503,TEMPORARILY_UNAVAILABLE", "429,TEMPORARILY_UNAVAILABLE"})
     void capabilityEvidenceIsScopedAndDistinguishesFailures(int status, State expected) {
         var fixture = fixture(request -> {
             if (request.uri().getPath().endsWith("/metadata")) return reply(resource("metadata19"));
@@ -147,6 +147,26 @@ class GitLabTicketsTest {
         var result = adapter.inspect(SOURCE, "42", "ticketing.read", adapter.captureAccess(SOURCE), new Gate());
         assertThat(result.state()).isEqualTo(expected); assertThat(result.productVersion()).isEqualTo("19.0.0-ee");
         assertThat(result.apiProfile()).isEqualTo("gitlab-rest-v4"); assertThat(result.context()).isNotBlank();
+    }
+    @ParameterizedTest @CsvSource({"/projects/42", "/projects/42/milestones"})
+    void hiddenBoundProjectOrProjectCollectionInvalidatesPrivateObservations(String hiddenPath) {
+        var fixture = fixture(request -> request.uri().getPath().equals("/api/v4" + hiddenPath)
+                ? new GitLabTestFixture.Reply(404, Map.of(), "synthetic-sensitive-provider-body") : normal(request));
+        var adapter = adapter(fixture);
+        assertCode(() -> adapter.read(input(Set.of("#7"), null), new Gate()), Code.AUTHORIZATION_FAILED);
+        assertThat(fixture.requests).noneSatisfy(request -> assertThat(request.uri().getPath()).endsWith("/issues/7"));
+        var capability = hiddenPath.endsWith("/milestones") ? "ticketing.version-membership" : "ticketing.read";
+        assertThat(adapter.inspect(SOURCE, "42", capability, adapter.captureAccess(SOURCE), new Gate()).state())
+                .isEqualTo(State.FORBIDDEN);
+    }
+    @Test void missingIndividualIssueAndMilestoneMembershipRetainNotFoundSemantics() {
+        var fixture = fixture(this::normal);
+        var missingIssue = adapter(fixture).read(input(Set.of("#99"), null), new Gate()).projects().getFirst();
+        assertThat(missingIssue.unresolvedKeys()).containsExactly("#99");
+        assertThat(missingIssue.issues()).isEmpty();
+        var removedMilestone = fixture(request -> request.uri().getPath().endsWith("/milestones/88/issues")
+                ? new GitLabTestFixture.Reply(404, Map.of(), "synthetic-sensitive-provider-body") : normal(request));
+        assertCode(() -> adapter(removedMilestone).read(input(Set.of(), "November"), new Gate()), Code.NOT_FOUND);
     }
     @Test void capabilityInspectionDistinguishesDisabledUnsupportedAndUnknownWrites() {
         var fixture = fixture(this::normal); var adapter = adapter(fixture); var access = adapter.captureAccess(SOURCE);
