@@ -63,6 +63,28 @@ class GitLabContractTest {
                             .hasSingleBean(ForgeProviderDefinition.class).hasSingleBean(TicketProviderDefinition.class);
                 });
     }
+    @Test void broadHostScanningDoesNotEvaluateOptionalDomainsBeforeHostBeans() {
+        new ApplicationContextRunner().withUserConfiguration(ScanningHost.class)
+                .withConfiguration(AutoConfigurations.of(GitLabConfiguration.class))
+                .run(context -> assertThat(context).hasNotFailed()
+                        .hasSingleBean(ForgeAdapter.class).hasSingleBean(TicketProviderAdapter.class)
+                        .hasSingleBean(io.givops.forge.command.PipelineCommandProvider.class));
+    }
+    @org.springframework.context.annotation.Configuration(proxyBeanMethods = false)
+    @org.springframework.context.annotation.ComponentScan(basePackageClasses = GitLabConfiguration.class,
+            excludeFilters = @org.springframework.context.annotation.ComponentScan.Filter(
+                    type = org.springframework.context.annotation.FilterType.ANNOTATION,
+                    classes = org.springframework.boot.autoconfigure.AutoConfiguration.class))
+    static class ScanningHost {
+        @org.springframework.context.annotation.Bean ForgeProperties hostForgeProperties() { return forgeLimits(); }
+        @org.springframework.context.annotation.Bean TicketProperties hostTicketProperties() { return GitLabTicketsTest.limits(); }
+        @org.springframework.context.annotation.Bean JsonMapper hostMapper() { return JsonMapper.builder().build(); }
+        @org.springframework.context.annotation.Bean Clock hostClock() { return Clock.systemUTC(); }
+        @org.springframework.context.annotation.Bean CredentialHost hostCredentials() {
+            return request -> { throw new AssertionError("Registration must not capture credentials"); };
+        }
+        @org.springframework.context.annotation.Bean ContextSigner hostSigner() { return (provider, namespace, parts) -> "context"; }
+    }
     @Test void forgeDomainRunsWithoutTicketHost() {
         runner().withBean(ForgeProperties.class, GitLabContractTest::forgeLimits).run(context ->
                 assertThat(context).hasNotFailed().hasSingleBean(ForgeAdapter.class).doesNotHaveBean(TicketProviderAdapter.class));
