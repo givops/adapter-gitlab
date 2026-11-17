@@ -131,15 +131,22 @@ public final class GitLabTickets implements TicketProviderAdapter, TicketWriteAd
         return translate(() -> {
             definition.validateCreateProjectKey(command.projectKey());
             if (command.displayName() == null || command.displayName().isBlank()) throw invalid();
-            // Namespace ID is explicit; no implicit repository is created by binding an existing project.
-            var payload = new LinkedHashMap<String,Object>();
-            payload.put("path", command.projectKey()); payload.put("name", command.displayName());
-            if (command.description() != null) payload.put("description", command.description());
-            if (command.leaderExternalId() != null && !command.leaderExternalId().isBlank())
-                payload.put("namespace_id", numeric(command.leaderExternalId()));
             Session session = session(source, access, gate);
-            ProjectObservation created = session.project(session.post("/projects", payload), null, null);
-            if (!created.projectKey().endsWith("/" + command.projectKey())) throw GitLabErrors.invalidResponse();
+            String key=command.projectKey();int slash=key.lastIndexOf('/');
+            String slug=slash<0?key:key.substring(slash+1);
+            String namespace=command.leaderExternalId()==null || command.leaderExternalId().isBlank()?null:numeric(command.leaderExternalId());
+            if(slash>=0) {
+                String resolved=new GitLabRepositories(transport,mapper).existingNamespace(source.baseUrl(),key.substring(0,slash),session.captured.token(),session.gate);
+                if(namespace!=null && !namespace.equals(resolved)) throw invalid();
+                namespace=resolved;
+            }
+            // Qualified paths resolve natively; the legacy slug plus numeric namespace ID remains supported.
+            var payload = new LinkedHashMap<String,Object>();
+            payload.put("path", slug); payload.put("name", command.displayName());
+            if (command.description() != null) payload.put("description", command.description());
+            if (namespace != null) payload.put("namespace_id", Long.parseLong(namespace));
+            ProjectObservation created = session.project(GitLabRepositories.createProject(transport, session.urls, session.captured.token(), session.gate, mapper, payload), null, null);
+            if (slash>=0 ? !created.projectKey().equals(key) : !created.projectKey().endsWith("/" + slug)) throw GitLabErrors.invalidResponse();
             return created;
         });
     }
@@ -160,10 +167,11 @@ public final class GitLabTickets implements TicketProviderAdapter, TicketWriteAd
                                                  Access access, TicketRequestGate gate) {
         return translate(() -> {
             requireProjectInstance(source, project);
-            if (command.summary() == null || command.summary().isBlank() || command.fixVersions().size() > 1) throw invalid();
-            if (command.workflowState() != null && command.workflowState() != WorkflowState.OPEN
+            if (command.summary() == null || command.summary().isBlank() || command.fixVersions().size() + command.versionSelectors().size() > 1
+                    || !command.fixVersions().isEmpty() && !command.versionSelectors().isEmpty()) throw invalid();
+            if (command.workflowState() != null && command.workflowState() != WorkflowState.OPEN && command.workflowState() != WorkflowState.DONE
                     || command.providerStatus() != null && !command.providerStatus().isBlank())
-                throw unsupported("GitLab issue creation supports the native opened state.");
+                throw unsupported("GitLab issues support OPEN and DONE; other workflow states require a native capability.");
             if (command.providerPriority() != null && !command.providerPriority().isBlank())
                 throw unsupported("GitLab issues have no native priority field; use the portable priority label.");
             String nativeType = command.providerType() == null || command.providerType().isBlank() ? "issue" : command.providerType();
@@ -177,15 +185,33 @@ public final class GitLabTickets implements TicketProviderAdapter, TicketWriteAd
             if (command.type() != null) labels.add("type::" + command.type().name().toLowerCase(java.util.Locale.ROOT));
             if (command.priority() != null) labels.add("priority::" + command.priority().name().toLowerCase(java.util.Locale.ROOT));
             if (!labels.isEmpty()) payload.put("labels", String.join(",", labels));
-            if (!command.fixVersions().isEmpty()) {
-                String id = numeric(command.fixVersions().getFirst());
-                if (session.versions(bound.externalProjectId()).stream().noneMatch(v -> id.equals(v.externalVersionId()))) throw invalid();
+            if (!command.fixVersions().isEmpty() || !command.versionSelectors().isEmpty()) {
+                List<VersionObservation> versions = session.versions(bound.externalProjectId());
+                String selected = !command.fixVersions().isEmpty() ? command.fixVersions().getFirst() : selectVersion(command.versionSelectors().getFirst(), versions);
+                String id = numeric(selected);
+                if (versions.stream().noneMatch(v -> id.equals(v.externalVersionId()))) throw invalid();
                 payload.put("milestone_id", Long.parseLong(id));
             }
             String assignee = command.assigneeExternalId();
             if (command.assignToSelf()) assignee = id(session.get("/user"), "id");
             if (assignee != null && !assignee.isBlank()) payload.put("assignee_ids", List.of(Long.parseLong(numeric(assignee))));
-            return session.issue(session.post(GitLabUrls.project(bound.externalProjectId()) + "/issues", payload), bound);
+            IssueObservation created = session.issue(session.post(GitLabUrls.project(bound.externalProjectId()) + "/issues", payload), bound);
+            if (command.workflowState() != WorkflowState.DONE) return created;
+            String path = GitLabUrls.project(bound.externalProjectId()) + "/issues/" + iid(created, bound);
+            // Close once, then reconcile by a fresh read. An ambiguous close is never replayed.
+            ForgeException closeFailure = null;
+            try {
+                var response = transport.put(session.urls.detail(path), session.captured.token(),
+                        mapper.writeValueAsBytes(Map.of("state_event", "close")), session.gate);
+                if (response.status() != 200) throw GitLabErrors.remoteStatus(response.status());
+            } catch (ForgeException failure) { closeFailure = failure; }
+            IssueObservation actual = session.issue(session.get(path), bound);
+            if (!created.identity().equals(actual.identity()) || !created.issueKey().equals(actual.issueKey())) throw GitLabErrors.invalidResponse();
+            if (!"closed".equals(actual.status())) {
+                if (closeFailure != null) throw closeFailure;
+                throw GitLabErrors.invalidResponse();
+            }
+            return actual;
         });
     }
     @Override public CapabilityInspection inspect(InstanceSource source, String projectId, String capability, Access access, TicketRequestGate gate) {
@@ -478,7 +504,8 @@ public final class GitLabTickets implements TicketProviderAdapter, TicketWriteAd
             return new IssueObservation(new IssueIdentity(project.externalProjectId(), id(row, "id")),
                     project.projectKey() + "#" + iid, text(row, "title", true), text(row, "issue_type", false), state,
                     state.equals("closed") ? "DONE" : "TODO", null, null, instant(row, "created_at"), instant(row, "updated_at"),
-                    instant(row, "closed_at"), milestones, safeUrl(row, "web_url", "/" + project.projectKey() + "/-/issues/" + iid),
+                    instant(row, "closed_at"), milestones, safeUrl(row, "web_url", "/" + project.projectKey() + "/-/issues/" + iid,
+                            "/" + project.projectKey() + "/-/work_items/" + iid),
                     clock.instant(), assignee, null, labels);
         }
         List<IssueObservation> members(ProjectObservation project, String milestone) {
@@ -521,17 +548,26 @@ public final class GitLabTickets implements TicketProviderAdapter, TicketWriteAd
             }
             return new ProjectResult(query.ticketProjectId(), project, versions, List.copyOf(issues.values()), unresolved, membership);
         }
-        URI safeUrl(JsonNode row, String field, String path) {
+        URI safeUrl(JsonNode row, String field, String... paths) {
             String value = text(row, field, true);
             try {
                 URI uri = URI.create(value); URI base = captured.source().baseUrl();
-                String expected = base.getPath().replaceAll("/+$", "") + path;
+                String prefix = base.getPath().replaceAll("/+$", "");
+                boolean expectedPath = java.util.Arrays.stream(paths).anyMatch(path -> (prefix + path).equals(uri.getRawPath()));
                 if (!"https".equalsIgnoreCase(uri.getScheme()) || !base.getHost().equalsIgnoreCase(uri.getHost())
                         || port(base) != port(uri) || uri.getRawUserInfo() != null || uri.getRawQuery() != null
-                        || uri.getRawFragment() != null || !expected.equals(uri.getRawPath())) throw GitLabErrors.invalidResponse();
+                        || uri.getRawFragment() != null || !expectedPath) throw GitLabErrors.invalidResponse();
                 return uri;
             } catch (IllegalArgumentException failure) { throw GitLabErrors.invalidResponse(); }
         }
+    }
+    private static String selectVersion(io.givops.ticketing.model.TicketWriteModels.VersionSelector selector, List<VersionObservation> versions) {
+        var matches = versions.stream().filter(v -> switch (selector.kind()) {
+            case NAME -> selector.value().equals(v.name());
+            case EXTERNAL_ID -> selector.value().equals(v.externalVersionId());
+        }).toList();
+        if (matches.size() != 1) throw invalid();
+        return matches.getFirst().externalVersionId();
     }
     private static void requireProjectInstance(InstanceSource source, RemoteProjectRef project) {
         if (project == null || !source.instanceId().equals(project.instanceId()))

@@ -19,7 +19,7 @@ public final class GitLabForgeDefinition implements ForgeProviderDefinition {
     @Override public String adapterId() { return shared.adapterId(); }
     @Override public String adapterVersion() { return shared.adapterVersion(); }
     @Override public List<String> capabilities() {
-        return List.of("forge.read", "forge.probe", "forge.discovery", "forge.group-hierarchy", "forge.repository-identity", "forge.pipeline-create");
+        return List.of("forge.read", "forge.probe", "forge.discovery", "forge.group-hierarchy", "forge.repository-create", "forge.repository-identity", "forge.pipeline-create");
     }
     @Override public List<String> apiProfiles() { return List.of("gitlab-rest-v4", "gitlab-graphql-pipeline-inputs"); }
     @Override public List<CredentialField> credentialFields() { return shared.credentialFields(); }

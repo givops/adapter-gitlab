@@ -36,6 +36,21 @@ class GitLabContractTest {
         assertThat(definition.issueReference(URI.create("https://evil.example.test/team/payments/-/issues/7"), GitLabTicketsTest.BASE)).isEmpty();
         assertThat(definition.issueReference(URI.create("https://gitlab.example.test/team/payments/-/issues/7?redirect=evil"))).isEmpty();
     }
+    @Test void recognizesNativeWorkItemUrlsWithinThePinnedInstanceContext() {
+        URI base = URI.create("https://gitlab.example.test/gitlab");
+        var reference = definition.issueReference(URI.create(base + "/team/payments/-/work_items/7"), base).orElseThrow();
+        assertThat(reference.issueKey()).isEqualTo("team/payments#7");
+        assertThat(reference.contextPath()).isEqualTo("/gitlab");
+        for (String candidate : java.util.List.of(
+                "https://evil.example.test/gitlab/team/payments/-/work_items/7",
+                "https://gitlab.example.test/other/team/payments/-/work_items/7",
+                "https://gitlab.example.test/gitlab/team/payments/-/work_items/7?redirect=other",
+                "https://gitlab.example.test/gitlab/team/payments/-/work_items/7#fragment",
+                "https://secret@gitlab.example.test/gitlab/team/payments/-/work_items/7",
+                "https://gitlab.example.test/gitlab/team/payments/-/work_items/0")) {
+            assertThat(definition.issueReference(URI.create(candidate), base)).as(candidate).isEmpty();
+        }
+    }
     @Test void rejectsUnsafeBaseUrlsAndProjectPaths() {
         for (String value : java.util.List.of("http://gitlab.example.test", "https://token@gitlab.example.test", "https://gitlab.example.test/../other", "https://gitlab.example.test?token=secret"))
             assertThatThrownBy(() -> definition.normalizeBaseUrl(URI.create(value))).isInstanceOf(RuntimeException.class);
@@ -45,7 +60,7 @@ class GitLabContractTest {
         var metadata = new java.util.Properties();
         try (var stream = getClass().getResourceAsStream("/META-INF/givops-adapter.properties")) { metadata.load(stream); }
         assertThat(metadata.getProperty("domains")).isEqualTo("ticketing,forge");
-        assertThat(metadata.getProperty("sdkApiVersion")).isEqualTo("0.3");
+        assertThat(metadata.getProperty("sdkApiVersion")).isEqualTo("0.4");
         assertThat(definition.capabilities()).contains("ticketing.read", "ticketing.browse", "ticketing.content", "ticketing.navigation",
                 "ticketing.project-create", "ticketing.version-create", "ticketing.issue-create").doesNotContain("ticketing.write", "ticketing.assets");
         assertThat(definition.commandLabels().get("versionResource")).isEqualTo("Milestone");

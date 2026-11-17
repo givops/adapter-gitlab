@@ -48,14 +48,18 @@ final class GitLabTransport implements AutoCloseable {
     }
 
     Response getForCheck(URI uri, String token, ForgeRequestGate gate) {
-        return send(uri, token, null, gate, status -> status == 200);
+        return send(uri, token, null, gate, status -> status == 200, "GET");
     }
 
     Response post(URI uri, String token, byte[] payload, ForgeRequestGate gate, int successStatus) {
-        return send(uri, token, payload, gate, status -> status == successStatus);
+        return send(uri, token, payload, gate, status -> status == successStatus, "POST");
     }
 
-    private Response send(URI uri, String token, byte[] payload, ForgeRequestGate gate, IntPredicate retainBody) {
+    Response put(URI uri, String token, byte[] payload, ForgeRequestGate gate) {
+        return send(uri, token, payload, gate, status -> status == 200, "PUT");
+    }
+
+    private Response send(URI uri, String token, byte[] payload, ForgeRequestGate gate, IntPredicate retainBody, String method) {
         // Construct and validate all outbound data before admitting the request.
         HttpRequest.Builder request;
         try {
@@ -64,7 +68,7 @@ final class GitLabTransport implements AutoCloseable {
             if (payload == null) {
                 request.GET();
             } else {
-                request.header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofByteArray(payload));
+                request.header("Content-Type", "application/json").method(method, HttpRequest.BodyPublishers.ofByteArray(payload));
             }
             if (token != null && !token.isBlank()) {
                 request.header("PRIVATE-TOKEN", token);

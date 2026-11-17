@@ -3,8 +3,8 @@
 One Apache-2.0 library supplies **GitLab ticketing and forge** through the public
 [GivOps adapter SDK](https://github.com/givops/adapter-sdk). The private GivOps
 application is not a build dependency. Java 25 and Spring Boot 4.0.9 are the
-supported runtime baseline. Install `adapter-gitlab-0.3.0-SNAPSHOT.jar` with a host
-supporting SDK API **0.3**, then restart it. Either domain can be configured alone.
+supported runtime baseline. Install `adapter-gitlab-0.4.0-SNAPSHOT.jar` with a host
+supporting SDK API **0.4**, then restart it. Either domain can be configured alone.
 
 ## Build and test
 
@@ -82,7 +82,10 @@ its project key is the complete path, such as `team/payments`. Binding is read-o
 and never creates a repository. The remote response must match the bound identity.
 
 Issue keys are `team/payments#7`; `#7` is resolved only within the bound project.
-Issue URLs support instance context paths. Project identity plus global issue ID
+Issue URLs support instance context paths and the native `/-/issues/:iid` and
+`/-/work_items/:iid` web routes. Both retain the exact bound project and issue IID;
+REST issue reads and transitions continue using `/projects/:id/issues/:iid`.
+Provider-returned web URLs are preserved rather than rewritten. Project identity plus global issue ID
 prevents IID collisions; instance isolation remains the host's responsibility.
 Reads preserve labels, native state, timestamps, first assignee and
 milestone membership. Selected issue lookups and complete selected milestone
@@ -143,14 +146,15 @@ Explicit supported commands:
 
 | Command | Remote operation | Details |
 | --- | --- | --- |
-| Project creation | `POST /projects` | Project slug/name/description; optional namespace ID in the owner field |
+| Project creation | `POST /projects` | Project slug/name/description with optional numeric namespace owner, or a namespace/project path resolved natively |
 | Version creation | `POST /projects/:id/milestones` | Creates an active milestone with title and optional due date |
 | Issue creation | `POST /projects/:id/issues` | Title/body, one project milestone, explicit or current-user assignee |
 
 Issue creation supports native `issue`, `incident`, `test_case` and `task` types
 when the remote instance permits them. Portable kind and priority become
-`type::<kind>` and `priority::<priority>` labels. Native issues begin `opened`;
-other requested workflow states, vendor priorities and release/archive commands
+`type::<kind>` and `priority::<priority>` labels. OPEN issues begin `opened`; DONE creation closes once with `PUT /projects/:id/issues/:iid`
+and reads the actual state back. An uncertain close is reconciled by a read without
+replaying the write. IN_PROGRESS, vendor priorities and release/archive commands
 are rejected before mutation. Release reports are not advertised.
 
 ## Forge behavior
@@ -194,7 +198,7 @@ access on group projects and member-only subgroup collection behavior.
 
 ## Product versions and API profiles
 
-SDK API `0.3`, adapter artifact `0.3.0-SNAPSHOT`, GitLab product version and remote
+SDK API `0.4`, adapter artifact `0.4.0-SNAPSHOT`, GitLab product version and remote
 API profiles are separate values. Profiles are observed per instance/project and
 credentials; there is no cross-tenant version or permission cache.
 
@@ -227,10 +231,10 @@ The 17/19 matrix describes the tested API profiles, not a claim that this suite
 has exercised live servers of those versions. Live validation is a separate,
 explicit step using disposable projects and supplied credentials.
 
-### SDK API 0.3 compatibility
+### SDK API 0.4 compatibility
 
-This source requires the exact public SDK API 0.3 and artifact version
-0.3.0-SNAPSHOT. Observation acquisition is metadata-only: issue descriptions and
+This source requires the exact public SDK API 0.4 and artifact version
+0.4.0-SNAPSHOT. Observation acquisition is metadata-only: issue descriptions and
 comments are not mapped. Existing creation/write descriptions and forge
 merge-request descriptions retain their existing behavior. This provider advertises
 optional transient browsing and Markdown content, without assets or immutable
@@ -239,8 +243,28 @@ space links without a content fetch. Detail supplies a validated ticket link aft
 resolving the stable global ID to its project IID; navigation alone leaves an
 unknown ticket link absent.
 
-The SDK source pin selects public commit
-[`ad5dc81e0378d31a8cb4e80a531dee559adea648`](https://github.com/givops/adapter-sdk/commit/ad5dc81e0378d31a8cb4e80a531dee559adea648),
-which supplies API 0.3. The repository's default build uses that public SDK source;
-no unpublished SDK checkout is required. Browser support is available on the
-`task/provider-browser` source branch. The artifact remains a development snapshot.
+The SDK source pin selects merged API 0.4 commit `762b642cedc1b82bb4915af56313e6e3c194a04f`.
+Run `./scripts/build.sh` to build and verify against that exact public SDK.
+The artifact remains a development snapshot; a source pin does not imply a tagged release.
+
+## Empty repository provisioning
+
+The optional `forge.repository-create` port creates private, empty projects through
+the same project-create primitive used by ticketing. An explicit namespace path is
+resolved with the [namespaces API](https://docs.gitlab.com/api/namespaces/).
+The current user's personal namespace is supported; personal namespaces cannot
+contain subgroups. With `createNamespaces=true`, missing nested groups are created
+in order with explicit `parent_id`, preserving each returned parent/path identity.
+Creation never initializes a README, license or Git reference. Exact lookup returns
+canonical IDs, HTTPS URLs, visibility, emptiness and the actual nullable default branch;
+it does not adopt or modify an existing project. Permission inspection remains UNKNOWN
+until the namespace-specific command supplies definitive remote evidence.
+
+GitLab's create API requires README initialization when specifying `default_branch`.
+For an empty repository, omit that input, push the intended initial branch, then
+use the adapter's bounded `setDefaultBranch` command and authoritative readback.
+The generic runner does not use a separate GitLab REST client.
+
+Issue commands also accept explicit NAME or EXTERNAL_ID version selectors. Names
+resolve uniquely to project milestone IDs; legacy `fixVersions` strings remain IDs.
+Closed milestones remain distinct from released Jira/YouTrack versions.
