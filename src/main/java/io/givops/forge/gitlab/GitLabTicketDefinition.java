@@ -19,9 +19,9 @@ public final class GitLabTicketDefinition implements TicketProviderDefinition {
     @Override public TicketProvider provider() { return TicketProvider.GITLAB; }
     @Override public String displayName() { return "GitLab"; }
     @Override public String adapterId() { return "io.givops:adapter-gitlab"; }
-    @Override public String adapterVersion() { return "0.2.0-SNAPSHOT"; }
+    @Override public String adapterVersion() { return "0.3.0-SNAPSHOT"; }
     @Override public List<String> capabilities() {
-        return List.of("ticketing.read", "ticketing.version-membership", "ticketing.project-create",
+        return List.of("ticketing.read", "ticketing.navigation", "ticketing.browse", "ticketing.content", "ticketing.version-membership", "ticketing.project-create",
                 "ticketing.version-create", "ticketing.issue-create");
     }
     @Override public List<String> apiProfiles() { return List.of("gitlab-rest-v4"); }

@@ -3,8 +3,8 @@
 One Apache-2.0 library supplies **GitLab ticketing and forge** through the public
 [GivOps adapter SDK](https://github.com/givops/adapter-sdk). The private GivOps
 application is not a build dependency. Java 25 and Spring Boot 4.0.9 are the
-supported runtime baseline. Install `adapter-gitlab-0.2.0-SNAPSHOT.jar` with a host
-supporting SDK API **0.2**, then restart it. Either domain can be configured alone.
+supported runtime baseline. Install `adapter-gitlab-0.3.0-SNAPSHOT.jar` with a host
+supporting SDK API **0.3**, then restart it. Either domain can be configured alone.
 
 ## Build and test
 
@@ -14,8 +14,7 @@ supporting SDK API **0.2**, then restart it. Either domain can be configured alo
 
 The script builds the pinned public SDK source and runs `mvn clean verify` here.
 For coordinated source development, set `GIVOPS_SDK_SOURCE=/path/to/adapter-sdk`.
-Changes using the new hierarchy port require the matching SDK source override until
-that SDK revision is committed and `sdk-revision.txt` can identify its published source.
+The pinned public SDK includes the optional group hierarchy port.
 For isolated dependency caches, set `MAVEN_OPTS=-Dmaven.repo.local=/path/to/task-cache`
 when invoking the build script.
 No private Maven repository, host checkout, fixture artifact or account is needed.
@@ -85,10 +84,53 @@ and never creates a repository. The remote response must match the bound identit
 Issue keys are `team/payments#7`; `#7` is resolved only within the bound project.
 Issue URLs support instance context paths. Project identity plus global issue ID
 prevents IID collisions; instance isolation remains the host's responsibility.
-Reads preserve description, labels, native state, timestamps, first assignee and
+Reads preserve labels, native state, timestamps, first assignee and
 milestone membership. Selected issue lookups and complete selected milestone
 membership use bounded requests. A missing issue is unresolved; authorization
 failures never silently become missing data.
+
+### Transient ticket browser
+
+`ticketing.browse`, `ticketing.content` and `ticketing.navigation` are registered
+through the SDK browser ports. Browsing validates the bound project and enumerates
+its issues with `GET /projects/:id/issues` (`scope=all`, `state=all`). It applies
+case-insensitive, NFC-normalized literal key/title search and native status, native
+issue type and label filters locally. Filter families combine with AND; values
+within each family combine with OR. This includes labels: GitLab's native
+comma-separated labels filter requires all labels and is deliberately not used.
+Description text is excluded from search and from observation persistence.
+
+The browser sorts local issue numbers numerically (`key-asc`, `key-desc`) or by
+update timestamp (`updated-asc`, `updated-desc`, with issue number as a tie break).
+Missing update timestamps sort first in ascending order. Both opened and closed
+issues use the ACTIVE lifecycle; opening maps to OPEN outcome, while closure has
+UNKNOWN outcome because GitLab does not distinguish success from cancellation.
+ARCHIVED and DRAFT lifecycle browsing is not advertised.
+
+Every list operation scans the complete bounded collection before filtering and
+returning a page. Exceeding page, object, request or byte limits fails the operation
+instead of returning an incomplete set. Continuations bind the query, page size,
+project binding and access context. The host additionally signs its browser
+context and cursor. Each continuation rereads live data: changes can shift offsets
+and cause omissions or duplicates between pages. Counts describe the observed
+scan, not an atomic snapshot. Mutable `gitlab-live` source revisions identify the
+bound access scope; `snapshot=false` makes this limitation explicit. No remote
+version cache or server-side frozen snapshot is claimed.
+
+Detail and content operations resolve the global issue ID from a fresh bounded
+project issue scan, then fetch `GET /projects/:id/issues/:issue_iid` and validate
+the global ID, IID, project and provider URL again. They never use a global ID as
+an IID or require GitLab's administrator-only global-ID detail endpoint. Path
+aliases remain scoped to the host binding while issue identity stays stable.
+The extra scan means very large projects may exceed configured browser budgets.
+
+Content returns the current raw Markdown description transiently, with an absent
+description represented as empty text. It checks the host gate, current credential
+lease and content byte limit. Descriptions, comments and body assets never enter
+observation persistence. `content=true`, `assets=false`: attachment bytes are not
+fetched or proxied, and no attachment or resolved-link metadata is advertised.
+The host renders or sanitizes the Markdown under its own content policy. Existing
+creation/write descriptions and forge merge-request descriptions are preserved.
 
 Project milestones provide versions. Native `active`/`closed`, start date and due
 date are preserved. `released` and `archived` remain false: closing a milestone
@@ -152,13 +194,13 @@ access on group projects and member-only subgroup collection behavior.
 
 ## Product versions and API profiles
 
-SDK API `0.2`, adapter artifact `0.2.0-SNAPSHOT`, GitLab product version and remote
+SDK API `0.3`, adapter artifact `0.3.0-SNAPSHOT`, GitLab product version and remote
 API profiles are separate values. Profiles are observed per instance/project and
 credentials; there is no cross-tenant version or permission cache.
 
 | Product | API used | Behavior |
 | --- | --- | --- |
-| GitLab 17 | REST v4 issues, project milestones, projects, merge requests, pipelines | Common read/create endpoints; native fixtures and HTTP contracts |
+| GitLab 17 | REST v4 issues, project milestones, projects, merge requests, pipelines | Common read/create endpoints plus bounded browser list/detail/Markdown content; native fixtures and HTTP contracts |
 | GitLab 17.0–17.9 | Pipeline input schema | Rejected after version detection before GraphQL/input mutation |
 | GitLab 17.10+ | `ciPipelineCreationInputs`, pipeline `inputs` | Remote feature flag/schema must permit the feature |
 | GitLab 18.1+ and 19 | Same REST v4 plus pipeline input schema | Pipeline `inputs` is generally available; project permissions still apply |
@@ -184,3 +226,21 @@ Official endpoint histories and contracts used for this implementation:
 The 17/19 matrix describes the tested API profiles, not a claim that this suite
 has exercised live servers of those versions. Live validation is a separate,
 explicit step using disposable projects and supplied credentials.
+
+### SDK API 0.3 compatibility
+
+This source requires the exact public SDK API 0.3 and artifact version
+0.3.0-SNAPSHOT. Observation acquisition is metadata-only: issue descriptions and
+comments are not mapped. Existing creation/write descriptions and forge
+merge-request descriptions retain their existing behavior. This provider advertises
+optional transient browsing and Markdown content, without assets or immutable
+snapshots. The `ticketing.navigation` capability supplies provider-owned project
+space links without a content fetch. Detail supplies a validated ticket link after
+resolving the stable global ID to its project IID; navigation alone leaves an
+unknown ticket link absent.
+
+The SDK source pin selects public commit
+[`ad5dc81e0378d31a8cb4e80a531dee559adea648`](https://github.com/givops/adapter-sdk/commit/ad5dc81e0378d31a8cb4e80a531dee559adea648),
+which supplies API 0.3. The repository's default build uses that public SDK source;
+no unpublished SDK checkout is required. Browser support is available on the
+`task/provider-browser` source branch. The artifact remains a development snapshot.
