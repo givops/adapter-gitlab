@@ -14,6 +14,10 @@ supporting SDK API **0.2**, then restart it. Either domain can be configured alo
 
 The script builds the pinned public SDK source and runs `mvn clean verify` here.
 For coordinated source development, set `GIVOPS_SDK_SOURCE=/path/to/adapter-sdk`.
+Changes using the new hierarchy port require the matching SDK source override until
+that SDK revision is committed and `sdk-revision.txt` can identify its published source.
+For isolated dependency caches, set `MAVEN_OPTS=-Dmaven.repo.local=/path/to/task-cache`
+when invoking the build script.
 No private Maven repository, host checkout, fixture artifact or account is needed.
 Tests use representative synthetic JSON, mocked HTTP and a local TLS server;
 there are no default live-provider tests. See [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -113,9 +117,38 @@ Preserves open merge requests, commit associations and their cache precedence,
 current merge-request head pipelines, branch pipelines selected by exact ref/SHA,
 discussions, approvals, connection probes and explicit pipeline commands.
 Provider lifecycle, conflict and CI states are normalized in this library.
-Discovery preserves its existing **Self-Managed only** hosting boundary; SaaS,
-Dedicated and unknown hosting do not advertise discovery. Reads and repository
-identity are independent of discovery support.
+Authenticated discovery and the optional `forge.group-hierarchy` capability support
+**Self-Managed and SaaS** hosting. Dedicated and unknown hosting do not advertise
+discovery. Project and group discovery remain independently available; a denied
+group request does not disable project discovery. Discovery requires a valid token
+and never falls back to anonymous requests. Other forge reads and repository identity
+retain their independent authentication behavior.
+
+| Discovery operation | REST v4 endpoint | SaaS scope |
+| --- | --- | --- |
+| Projects across namespaces | `GET /projects` | `membership=true`; ascending ID ranges retain personal and inherited membership |
+| Direct projects in a group | `GET /groups/:id/projects` | `min_access_level=10`, `with_shared=false`, `include_subgroups=false` |
+| Member groups | `GET /groups` | `all_available=false`, `top_level_only=false` |
+| Direct member subgroups | `GET /groups/:id/subgroups` | `all_available=false`; every result must identify the requested direct parent |
+| Revalidate project for import | `GET /projects` | `membership=true` with an exact numeric ID range and a one-object response bound |
+| Known namespace/ancestor metadata | `GET /groups/:id?with_projects=false` | The host supplies only IDs derived from a revalidated member project/group or preceding ancestor |
+
+An ordinary readable project detail does not prove SaaS import eligibility. The
+exact membership query is repeated during project revalidation, without an unscoped
+detail fallback. Public visibility is allowed for a member project; unrelated public
+projects and groups are excluded. Self-Managed project/group collection scope remains
+unchanged. Collection pagination retains the original membership/search/parent filters,
+numeric IDs and response limits.
+
+The hierarchy port reads remote metadata only. The host bounds ancestor depth,
+rejects cycles and verifies complete paths in the same destination/credential context;
+it must not expose arbitrary group-ID metadata lookup. A readable ancestor does not
+grant membership or import eligibility. Local subgroup creation, mappings and access
+inheritance belong to the host. No discovery operation creates remote resources.
+
+These filters use the documented [projects API](https://docs.gitlab.com/api/projects/)
+and [groups API](https://docs.gitlab.com/api/groups/), including effective minimum
+access on group projects and member-only subgroup collection behavior.
 
 ## Product versions and API profiles
 
