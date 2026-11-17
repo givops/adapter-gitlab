@@ -14,8 +14,7 @@ supporting SDK API **0.3**, then restart it. Either domain can be configured alo
 
 The script builds the pinned public SDK source and runs `mvn clean verify` here.
 For coordinated source development, set `GIVOPS_SDK_SOURCE=/path/to/adapter-sdk`.
-Changes using the new hierarchy port require the matching SDK source override until
-that SDK revision is committed and `sdk-revision.txt` can identify its published source.
+The pinned public SDK includes the optional group hierarchy port.
 For isolated dependency caches, set `MAVEN_OPTS=-Dmaven.repo.local=/path/to/task-cache`
 when invoking the build script.
 No private Maven repository, host checkout, fixture artifact or account is needed.
@@ -241,7 +240,7 @@ resolving the stable global ID to its project IID; navigation alone leaves an
 unknown ticket link absent.
 
 The SDK source pin selects public commit
-[`18a1a9c1103d2b8793f900769c389771c1debded`](https://github.com/givops/adapter-sdk/commit/18a1a9c1103d2b8793f900769c389771c1debded),
+[`ad5dc81e0378d31a8cb4e80a531dee559adea648`](https://github.com/givops/adapter-sdk/commit/ad5dc81e0378d31a8cb4e80a531dee559adea648),
 which supplies API 0.3. The repository's default build uses that public SDK source;
 no unpublished SDK checkout is required. Browser support is available on the
 `task/provider-browser` source branch. The artifact remains a development snapshot.
