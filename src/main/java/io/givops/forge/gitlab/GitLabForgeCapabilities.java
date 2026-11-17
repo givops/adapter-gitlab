@@ -36,9 +36,14 @@ final class GitLabForgeCapabilities implements ForgeCapabilityInspector {
             if (capability.equals("forge.pipeline-create") && profile.beforePipelineInputs())
                 return result(capability, State.UNSUPPORTED, "pipeline_inputs_require_gitlab_17_10", version, source);
         } catch (ForgeException failure) { /* Metadata does not determine permission for project operations. */ }
-        if (!Set.of("forge.read", "forge.probe", "forge.discovery", "forge.group-hierarchy", "forge.repository-identity", "forge.pipeline-create").contains(capability))
+        if (!Set.of("forge.read", "forge.probe", "forge.discovery", "forge.group-hierarchy", "forge.repository-create", "forge.repository-identity", "forge.pipeline-create").contains(capability))
             return result(capability, State.UNSUPPORTED, "operation_not_implemented", version, source);
         try {
+            if (capability.equals("forge.repository-create")) {
+                if (!GitLabCredentials.validToken(access.token())) return result(capability,State.FORBIDDEN,"gitlab_unauthorized",version,source);
+                transport.get(urls.detail("/user"),access.token(),gate);
+                return result(capability,State.UNKNOWN,"namespace_and_create_permission_require_explicit_command",version,source);
+            }
             if (source.projectId() == null) { state = State.UNKNOWN; reason = "project_not_selected"; }
             else if (discovery && access.hosting() == Hosting.SAAS) {
                 if (!source.projectId().matches("[1-9][0-9]{0,18}"))

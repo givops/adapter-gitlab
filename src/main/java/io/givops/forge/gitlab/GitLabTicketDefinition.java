@@ -19,7 +19,7 @@ public final class GitLabTicketDefinition implements TicketProviderDefinition {
     @Override public TicketProvider provider() { return TicketProvider.GITLAB; }
     @Override public String displayName() { return "GitLab"; }
     @Override public String adapterId() { return "io.givops:adapter-gitlab"; }
-    @Override public String adapterVersion() { return "0.3.0-SNAPSHOT"; }
+    @Override public String adapterVersion() { return "0.4.0-SNAPSHOT"; }
     @Override public List<String> capabilities() {
         return List.of("ticketing.read", "ticketing.navigation", "ticketing.browse", "ticketing.content", "ticketing.version-membership", "ticketing.project-create",
                 "ticketing.version-create", "ticketing.issue-create");
@@ -29,7 +29,7 @@ public final class GitLabTicketDefinition implements TicketProviderDefinition {
         return List.of(new CredentialField("apiToken", "API token", CredentialField.Type.SECRET, true, 4096));
     }
     @Override public Map<String,String> commandLabels() {
-        return Map.of("projectKey", "Project slug", "projectName", "Project name", "projectOwner", "Namespace ID (optional)",
+        return Map.of("projectKey", "Project slug or namespace/project path", "projectName", "Project name", "projectOwner", "Namespace ID (optional)",
                 "projectResource", "Project", "versionResource", "Milestone", "issueResource", "Issue");
     }
     @Override public Optional<IssueReference> issueReference(URI candidate, URI baseUrl) {
@@ -43,7 +43,7 @@ public final class GitLabTicketDefinition implements TicketProviderDefinition {
                 + (candidate.getRawFragment() == null ? "" : "#" + candidate.getRawFragment()));
         return issueReference(relative).map(ref -> new IssueReference(ref.issueKey(), prefix));
     }
-    @Override public String createProjectKeyPattern() { return "[A-Za-z0-9_][A-Za-z0-9_.-]{0,254}"; }
+    @Override public String createProjectKeyPattern() { return "[A-Za-z0-9_][A-Za-z0-9_.-]{0,254}(?:/[A-Za-z0-9_][A-Za-z0-9_.-]{0,254})*"; }
     @Override public String projectKeyPattern() { return PROJECT_PATH; }
     @Override public String externalIdPattern() { return "[1-9][0-9]{0,18}|" + PROJECT_PATH; }
     @Override public URI normalizeBaseUrl(URI value) {
@@ -73,7 +73,7 @@ public final class GitLabTicketDefinition implements TicketProviderDefinition {
     }
     @Override public Optional<IssueReference> issueReference(URI candidate) {
         if (candidate == null || candidate.getRawQuery() != null || candidate.getRawFragment() != null) return Optional.empty();
-        var matcher = java.util.regex.Pattern.compile("/(" + PROJECT_PATH + ")/-/issues/([1-9][0-9]{0,18})")
+        var matcher = java.util.regex.Pattern.compile("/(" + PROJECT_PATH + ")/-/(?:issues|work_items)/([1-9][0-9]{0,18})")
                 .matcher(candidate.getRawPath() == null ? "" : candidate.getRawPath());
         return matcher.matches() ? Optional.of(new IssueReference(matcher.group(1) + "#" + matcher.group(2), "")) : Optional.empty();
     }

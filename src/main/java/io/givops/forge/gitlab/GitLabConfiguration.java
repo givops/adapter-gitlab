@@ -34,6 +34,7 @@ public class GitLabConfiguration {
         @Bean GitLabPipelineCommands gitLabPipelineCommands(GitLabTransport gitLabForgeTransport, JsonMapper json, ForgeProperties limits) {
             return new GitLabPipelineCommands(gitLabForgeTransport, json, limits);
         }
+    @Bean GitLabRepositories gitLabProvisioningAdapter(GitLabTransport gitLabForgeTransport, JsonMapper mapper) { return new GitLabRepositories(gitLabForgeTransport,mapper); }
         @Bean GitLabIdentity gitLabIdentity(GitLabTransport gitLabForgeTransport, JsonMapper json) { return new GitLabIdentity(gitLabForgeTransport, json); }
         @Bean GitLabForgeCapabilities gitLabForgeCapabilities(GitLabTransport gitLabForgeTransport, JsonMapper json, Clock clock) {
             return new GitLabForgeCapabilities(gitLabForgeTransport, json, clock);

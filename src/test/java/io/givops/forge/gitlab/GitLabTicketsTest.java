@@ -30,6 +30,7 @@ import java.util.function.Function;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import tools.jackson.databind.json.JsonMapper;
 
 class GitLabTicketsTest {
@@ -205,12 +206,103 @@ class GitLabTicketsTest {
         assertThat(issue.issueKey()).isEqualTo("team/payments#7");
         assertThat(fixture.requests.stream().filter(r -> r.method().equals("POST"))).hasSize(3);
     }
+    @Test void malformedTicketProjectCreationRetainsSanitizedInvalidResponseClassification() {
+        var fixture=fixture(request -> new GitLabTestFixture.Reply(201,Map.of(),"{\"private-note\":\"provider-private-sentinel\""));
+        var adapter=adapter(fixture);var access=adapter.captureAccess(SOURCE);
+        assertThatThrownBy(() -> adapter.createProject(SOURCE,new CreateProjectCommand("payments","Payments",null,"5"),access,new Gate()))
+                .isInstanceOfSatisfying(TicketException.class,failure -> {
+                    assertThat(failure.code()).isEqualTo(Code.INVALID_RESPONSE);
+                    assertThat(failure.getMessage()).doesNotContain("provider-private-sentinel");
+                    assertThat(failure.getCause()).isNull();
+                });
+        assertThat(fixture.requests).extracting(HttpRequest::method).containsExactly("POST");
+    }
+    @Test void resolvesQualifiedCreatePathNativelyAndRejectsConflictingLegacyOwner() {
+        var fixture=fixture(request -> {
+            if(request.uri().getPath().equals("/api/v4/namespaces/team")) return reply("{\"id\":5,\"kind\":\"group\",\"full_path\":\"team\",\"parent_id\":null}");
+            if(request.method().equals("POST")) return new GitLabTestFixture.Reply(201,Map.of(),resource("project"));
+            return normal(request);
+        });
+        var adapter=adapter(fixture);var access=adapter.captureAccess(SOURCE);
+        assertThat(adapter.createProject(SOURCE,new CreateProjectCommand("team/payments","Payments",null,null),access,new Gate()).projectKey()).isEqualTo("team/payments");
+        assertThat(fixture.requests).extracting(HttpRequest::method).containsExactly("GET","POST");
+        assertCode(() -> adapter.createProject(SOURCE,new CreateProjectCommand("team/payments","Payments",null,"6"),access,new Gate()),Code.INVALID_CONFIGURATION);
+        assertThat(fixture.requests.stream().filter(r -> r.method().equals("POST"))).hasSize(1);
+    }
     @Test void refusesUnsupportedMilestoneReleaseAndIssueStateBeforeWriting() {
         var fixture = fixture(this::normal); var adapter = adapter(fixture); var access = adapter.captureAccess(SOURCE);
         assertCode(() -> adapter.createVersion(SOURCE, remote(), new CreateVersionCommand("release", true, false, null), access, new Gate()), Code.UNSUPPORTED_PROVIDER);
-        var command = new CreateIssueCommand("Title", "Body", IssueKind.BUG, null, WorkflowState.DONE, null, PriorityLevel.NORMAL, null, List.of(), false, null);
+        var command = new CreateIssueCommand("Title", "Body", IssueKind.BUG, null, WorkflowState.IN_PROGRESS, null, PriorityLevel.NORMAL, null, List.of(), false, null);
         assertCode(() -> adapter.createIssue(SOURCE, remote(), command, access, new Gate()), Code.UNSUPPORTED_PROVIDER);
         assertThat(fixture.requests).isEmpty();
+    }
+    @ParameterizedTest @ValueSource(strings = {"issues", "work_items"})
+    void createsDoneWithOneCloseAndFreshReadAndExplicitNamedVersion(String webRoute) {
+        var closed = new AtomicBoolean();
+        String nativeIssue = resource("issue").replace("/-/issues/7", "/-/" + webRoute + "/7");
+        var fixture = fixture(request -> {
+            if (request.method().equals("POST")) return new GitLabTestFixture.Reply(201, Map.of(), nativeIssue);
+            if (request.method().equals("PUT")) { closed.set(true); return reply(nativeIssue.replace("opened", "closed")); }
+            if (request.uri().getPath().endsWith("/issues/7") && closed.get()) return reply(nativeIssue.replace("opened", "closed"));
+            return normal(request);
+        });
+        var adapter = adapter(fixture); var access = adapter.captureAccess(SOURCE);
+        var command = new CreateIssueCommand("Title", "Body", IssueKind.TASK, null, WorkflowState.DONE, null,
+                null, null, List.of(), false, null, List.of(new VersionSelector(VersionSelectorKind.NAME, "November")));
+        var actual = adapter.createIssue(SOURCE, remote(), command, access, new Gate());
+        assertThat(actual.status()).isEqualTo("closed");
+        assertThat(actual.releaseVersionIds()).containsExactly("88");
+        assertThat(actual.webUrl()).isEqualTo(URI.create(BASE + "/team/payments/-/" + webRoute + "/7"));
+        assertThat(fixture.requests).extracting(HttpRequest::method).containsExactly("GET", "GET", "POST", "PUT", "GET");
+    }
+    @Test void readsNativeWorkItemLinksThroughTheIssueRestEndpoint() {
+        var fixture = fixture(request -> {
+            var response = normal(request);
+            return new GitLabTestFixture.Reply(response.status(), response.headers(), response.body().replace("/-/issues/7", "/-/work_items/7"));
+        });
+        var adapter = adapter(fixture);
+        var result = adapter.read(input(Set.of("#7"), null), new Gate(), adapter.captureAccess(SOURCE));
+        assertThat(result.projects().getFirst().issues()).singleElement().satisfies(issue -> {
+            assertThat(issue.identity()).isEqualTo(new IssueIdentity("42", "901"));
+            assertThat(issue.issueKey()).isEqualTo("team/payments#7");
+            assertThat(issue.webUrl()).isEqualTo(URI.create(BASE + "/team/payments/-/work_items/7"));
+        });
+        assertThat(fixture.requests.stream().filter(request -> request.uri().getPath().endsWith("/issues/7"))).hasSize(1);
+    }
+    @ParameterizedTest @ValueSource(strings = {
+            "https://evil.example.test/team/payments/-/work_items/7",
+            "https://gitlab.example.test/other/payments/-/work_items/7",
+            "https://gitlab.example.test/team/payments/-/work_items/8",
+            "https://gitlab.example.test/team/payments/-/work_items/7?redirect=other",
+            "https://gitlab.example.test/team/payments/-/work_items/7#fragment",
+            "https://secret@gitlab.example.test/team/payments/-/work_items/7"})
+    void rejectsWorkItemLinksOutsideTheExactBoundIdentity(String webUrl) {
+        var fixture = fixture(request -> {
+            var response = normal(request);
+            return new GitLabTestFixture.Reply(response.status(), response.headers(), response.body()
+                    .replace(BASE + "/team/payments/-/issues/7", webUrl));
+        });
+        var adapter = adapter(fixture);
+        assertCode(() -> adapter.read(input(Set.of("#7"), null), new Gate(), adapter.captureAccess(SOURCE)), Code.INVALID_RESPONSE);
+    }
+    @Test void uncertainCloseReconcilesWithoutRepeatingMutation() {
+        var fixture = fixture(request -> {
+            if (request.method().equals("POST")) return new GitLabTestFixture.Reply(201, Map.of(), resource("issue"));
+            if (request.method().equals("PUT")) return new GitLabTestFixture.Reply(503, Map.of(), "private provider payload");
+            if (request.uri().getPath().endsWith("/issues/7")) return reply(resource("issue").replace("opened", "closed"));
+            return normal(request);
+        });
+        var adapter=adapter(fixture);
+        var command=new CreateIssueCommand("Title",null,IssueKind.TASK,null,WorkflowState.DONE,null,null,null,List.of(),false,null);
+        assertThat(adapter.createIssue(SOURCE,remote(),command,adapter.captureAccess(SOURCE),new Gate()).status()).isEqualTo("closed");
+        assertThat(fixture.requests.stream().filter(r -> r.method().equals("POST"))).hasSize(1);
+        assertThat(fixture.requests.stream().filter(r -> r.method().equals("PUT"))).hasSize(1);
+    }
+    @Test void unknownTypedVersionFailsBeforeIssueMutation() {
+        var fixture=fixture(this::normal);var adapter=adapter(fixture);
+        var command=new CreateIssueCommand("Title",null,null,null,WorkflowState.OPEN,null,null,null,List.of(),false,null,List.of(new VersionSelector(VersionSelectorKind.EXTERNAL_ID,"999")));
+        assertCode(() -> adapter.createIssue(SOURCE,remote(),command,adapter.captureAccess(SOURCE),new Gate()),Code.INVALID_CONFIGURATION);
+        assertThat(fixture.requests).allSatisfy(r -> assertThat(r.method()).isEqualTo("GET"));
     }
     @Test void mutationRejectsAProjectFromAnotherInstanceBeforeHttp() {
         var fixture = fixture(this::normal); var adapter = adapter(fixture); var access = adapter.captureAccess(SOURCE);
