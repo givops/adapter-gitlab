@@ -40,6 +40,15 @@ class GitLabTicketsTest {
     final AtomicBoolean revoked = new AtomicBoolean();
     final AtomicBoolean locked = new AtomicBoolean();
 
+    @Test void navigatesToBoundProviderSpaceWithoutCollectingContent() {
+        var fixture = fixture(this::normal); var adapter = adapter(fixture);
+        var request = new io.givops.ticketing.model.TicketBrowserModels.BrowserRequest(SOURCE, UUID.randomUUID(), "42", "team/payments", null, NOW);
+        var access = adapter.captureAccess(SOURCE);
+        assertThat(adapter.navigate(request, null, access, new Gate()).spaceUrl()).isEqualTo(URI.create(BASE + "/team/payments/-/issues"));
+        assertThat(fixture.requests).isEmpty();
+        revoked.set(true);
+        assertThatThrownBy(() -> adapter.navigate(request, null, access, new Gate())).isInstanceOf(TicketException.class);
+    }
     @Test void readsNativeIssueMetadataAndMilestoneMembershipWithoutInventingReleaseSemantics() {
         var fixture = fixture(this::normal);
         var adapter = adapter(fixture); var access = adapter.captureAccess(SOURCE);
@@ -48,7 +57,7 @@ class GitLabTicketsTest {
         assertThat(result.issues()).singleElement().satisfies(issue -> {
             assertThat(issue.issueKey()).isEqualTo("team/payments#7");
             assertThat(issue.identity()).isEqualTo(new IssueIdentity("42", "901"));
-            assertThat(issue.description()).contains("duplicating payment");
+            assertThat(issue.description()).isNull();
             assertThat(issue.labels()).containsExactly("backend", "priority::high");
             assertThat(issue.assigneeAccountId()).isEqualTo("17");
             assertThat(issue.releaseVersionIds()).containsExactly("88");
@@ -63,6 +72,12 @@ class GitLabTicketsTest {
         assertThat(result.unresolvedKeys()).containsExactlyInAnyOrder("other/payments#7", "#99");
         assertThat(fixture.requests).allSatisfy(request -> assertThat(request.headers().firstValue("PRIVATE-TOKEN")).contains("synthetic-token"));
         assertThat(adapter.current(SOURCE, access, true)).isTrue(); assertThat(locked).isTrue();
+    }
+    @Test void preservesFullMergeRequestDescription() {
+        var row = tools.jackson.databind.json.JsonMapper.builder().build().createObjectNode()
+                .put("project_id", 42).put("iid", 1).put("id", 111).put("state", "opened")
+                .put("title", "Synthetic merge request").put("description", "FORGE-BODY-MUST-SURVIVE");
+        assertThat(GitLabPayload.changeRequest(row, NOW).description()).isEqualTo("FORGE-BODY-MUST-SURVIVE");
     }
     @Test void readsSelectedVersionMembershipAndRejectsUnknownOrExcessiveSelection() {
         var fixture = fixture(this::normal); var adapter = adapter(fixture); var access = adapter.captureAccess(SOURCE);

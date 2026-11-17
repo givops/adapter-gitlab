@@ -1,5 +1,9 @@
 package io.givops.forge.gitlab;
 
+import io.givops.ticketing.model.TicketBrowserModels.*;
+import io.givops.ticketing.port.TicketNavigationAdapter;
+import io.givops.ticketing.port.TicketBrowseAdapter;
+import io.givops.ticketing.port.TicketContentAdapter;
 import io.givops.adapters.CapabilityInspection;
 import io.givops.forge.model.ForgeException;
 import io.givops.forge.port.ForgeRequestGate;
@@ -28,12 +32,17 @@ import io.givops.ticketing.port.TicketProviderAdapter;
 import io.givops.ticketing.port.TicketRequestGate;
 import io.givops.ticketing.port.TicketWriteAdapter;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -49,8 +58,12 @@ import tools.jackson.databind.ObjectReader;
 import tools.jackson.databind.json.JsonMapper;
 
 /** Native issues and project milestones; all HTTP uses the same bounded GitLab transport as forge reads. */
-public final class GitLabTickets implements TicketProviderAdapter, TicketWriteAdapter, TicketCapabilityInspector {
+public final class GitLabTickets implements TicketProviderAdapter, TicketWriteAdapter, TicketCapabilityInspector,
+        TicketNavigationAdapter, TicketBrowseAdapter, TicketContentAdapter {
     private static final int PAGE_SIZE = 100;
+    private static final BrowseDescriptor BROWSER = new BrowseDescriptor(
+            List.of("text:key-title-literal-nfc", "statuses", "categories", "labels:any"), List.of(Lifecycle.ACTIVE),
+            List.of("key-asc", "key-desc", "updated-asc", "updated-desc"), false, true, false);
     private final GitLabCredentials credentials;
     private final TicketProperties limits;
     private final GitLabTransport transport;
@@ -214,6 +227,120 @@ public final class GitLabTickets implements TicketProviderAdapter, TicketWriteAd
     private Session session(InstanceSource source, Access access, TicketRequestGate gate) {
         return new Session(credentials.require(source, access, false), gate);
     }
+    @Override public BrowseDescriptor describe(BrowserRequest request, Access access, TicketRequestGate gate) {
+        return translate(() -> {
+            Session session = browserSession(request, access, gate);
+            session.browserProject(request);
+            session.gate.check();
+            return BROWSER;
+        });
+    }
+    @Override public TicketPage list(BrowserRequest request, BrowseQuery query, Access access, TicketRequestGate gate) {
+        return translate(() -> {
+            Session session = browserSession(request, access, gate);
+            validateQuery(query);
+            SourceRevision revision = browserRevision(request, access);
+            String cursorScope = digest(mapper.writeValueAsBytes(List.of(revision, new BrowseQuery(query.text(), query.lifecycle(),
+                    query.statuses(), query.categories(), query.labels(), query.sort(), query.pageSize(), null))));
+            int offset = offset(query.continuation(), cursorScope);
+            ProjectObservation project = session.browserProject(request);
+            var matches = new ArrayList<IssueObservation>();
+            String search = literal(query.text());
+            for (IssueObservation issue : session.browserIssues(project)) {
+                session.gate.check();
+                if ((search.isEmpty() || literal(issue.issueKey()).contains(search) || literal(issue.summary()).contains(search))
+                        && (query.statuses().isEmpty() || query.statuses().contains(issue.status()))
+                        && (query.categories().isEmpty() || issue.type() != null && query.categories().contains(issue.type()))
+                        && (query.labels().isEmpty() || issue.labels().stream().anyMatch(query.labels()::contains))) matches.add(issue);
+            }
+            Comparator<IssueObservation> order = Comparator.comparingLong(issue -> Long.parseLong(iid(issue, project)));
+            if (query.sort().startsWith("updated-")) order = Comparator.comparing(IssueObservation::updatedAt,
+                    Comparator.nullsFirst(Comparator.naturalOrder())).thenComparing(order);
+            if (query.sort().endsWith("-desc")) order = order.reversed();
+            matches.sort(order);
+            if (offset > matches.size()) throw staleBrowser();
+            int end = Math.min(matches.size(), offset + query.pageSize());
+            var items = matches.subList(offset, end).stream().map(issue -> summary(request, issue, revision)).toList();
+            session.gate.check();
+            return new TicketPage(items, end < matches.size() ? "offset:" + end + ":" + cursorScope : null,
+                    (long) matches.size(), revision, clock.instant(), query);
+        });
+    }
+    @Override public TicketDetail detail(BrowserRequest request, TicketRef ticket, Access access, TicketRequestGate gate) {
+        return translate(() -> {
+            Session session = browserSession(request, access, gate);
+            requireTicket(request, ticket);
+            ProjectObservation project = session.browserProject(request);
+            JsonNode row = session.browserIssue(project, ticket.externalIssueId());
+            IssueObservation issue = session.issue(row, project);
+            session.gate.check();
+            return new TicketDetail(summary(request, issue, browserRevision(request, access)), issue.createdAt(),
+                    issue.assigneeAccountId(), issue.releaseVersionIds(), new Navigation(spaceUrl(request), issue.webUrl()));
+        });
+    }
+    @Override public TicketContent content(BrowserRequest request, TicketRef ticket, Access access, TicketRequestGate gate) {
+        return translate(() -> {
+            Session session = browserSession(request, access, gate);
+            requireTicket(request, ticket);
+            ProjectObservation project = session.browserProject(request);
+            JsonNode row = session.browserIssue(project, ticket.externalIssueId());
+            String body = text(row, "description", false);
+            if (body == null) body = "";
+            if (body.getBytes(StandardCharsets.UTF_8).length > Math.min(1_048_576, limits.maxSourceTextBytes())) throw limit();
+            session.gate.check();
+            return new TicketContent(ticket, browserRevision(request, access), ContentFormat.MARKDOWN, body, List.of(), List.of());
+        });
+    }
+    private Session browserSession(BrowserRequest request, Access access, TicketRequestGate gate) {
+        Session session = session(request.source(), access, gate);
+        session.gate.check();
+        definition.validateProject(request.externalProjectId(), request.projectKey());
+        if (request.revision() != null && !request.revision().equals(browserRevision(request, access))) throw staleBrowser();
+        return session;
+    }
+    private static SourceRevision browserRevision(BrowserRequest request, Access access) {
+        // This identifies a live access scope, never a remotely frozen issue snapshot.
+        return new SourceRevision("gitlab-live", digest((request.source().instanceId() + "\n" + request.source().revision()
+                + "\n" + request.ticketProjectId() + "\n" + request.externalProjectId() + "\n" + request.projectKey()
+                + "\n" + access.context()).getBytes(StandardCharsets.UTF_8)), false);
+    }
+    private static String digest(byte[] bytes) {
+        try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)); }
+        catch (NoSuchAlgorithmException failure) { throw new IllegalStateException(failure); }
+    }
+    private int offset(String continuation, String scope) {
+        if (continuation == null) return 0;
+        var match = java.util.regex.Pattern.compile("offset:([1-9][0-9]{0,8}):([0-9a-f]{64})").matcher(continuation);
+        if (!match.matches() || !scope.equals(match.group(2))) throw invalid();
+        int offset = Integer.parseInt(match.group(1));
+        if (offset > limits.maxObjects()) throw limit();
+        return offset;
+    }
+    private static void validateQuery(BrowseQuery query) {
+        if (query == null || !BROWSER.lifecycles().contains(query.lifecycle()) || !BROWSER.sorts().contains(query.sort())
+                || query.text().codePoints().anyMatch(Character::isISOControl)) throw invalid();
+        for (List<String> family : List.of(query.statuses(), query.categories(), query.labels()))
+            for (String value : family) if (value.isBlank() || value.length() > 256 || value.codePoints().anyMatch(Character::isISOControl)) throw invalid();
+    }
+    private static String literal(String text) {
+        return java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFC).toLowerCase(java.util.Locale.ROOT);
+    }
+    private static void requireTicket(BrowserRequest request, TicketRef ticket) {
+        if (ticket == null || !request.source().instanceId().equals(ticket.instanceId())
+                || !request.externalProjectId().equals(ticket.externalProjectId())) throw staleBrowser();
+        numeric(ticket.externalIssueId());
+    }
+    private static TicketSummary summary(BrowserRequest request, IssueObservation issue, SourceRevision revision) {
+        // The host binding may use a path alias; preserve that scope while retaining the global issue ID.
+        return new TicketSummary(new TicketRef(request.source().instanceId(), request.externalProjectId(), issue.identity().externalIssueId()),
+                issue.issueKey(), issue.summary(), issue.status(), issue.type(), Lifecycle.ACTIVE,
+                "opened".equals(issue.status()) ? Outcome.OPEN : Outcome.UNKNOWN, issue.labels(), issue.webUrl(), issue.updatedAt(), true, revision);
+    }
+    private static String iid(IssueObservation issue, ProjectObservation project) { return issue.issueKey().substring(project.projectKey().length() + 1); }
+    private static URI spaceUrl(BrowserRequest request) {
+        return URI.create(request.source().baseUrl().toString().replaceAll("/+$", "") + "/" + request.projectKey() + "/-/issues");
+    }
+    private static TicketException staleBrowser() { return GitLabCredentials.error(Code.STALE_CONTEXT, "GitLab browser context changed."); }
     private final class Session {
         private final GitLabCredentials.Captured captured;
         private final GitLabUrls urls;
@@ -264,6 +391,36 @@ public final class GitLabTickets implements TicketProviderAdapter, TicketWriteAd
         ProjectObservation project(String externalId, String key) {
             definition.validateProject(externalId, key);
             return project(projectResource(GitLabUrls.project(externalId)), externalId, key);
+        }
+        ProjectObservation browserProject(BrowserRequest request) {
+            JsonNode row = projectResource(GitLabUrls.project(request.externalProjectId()));
+            ProjectObservation project = project(row, request.externalProjectId(), request.projectKey());
+            if (row.path("issues_enabled").isBoolean() && !row.path("issues_enabled").booleanValue()
+                    || "disabled".equals(row.path("issues_access_level").asText()))
+                throw GitLabCredentials.error(Code.DISABLED, "GitLab project issues are disabled.");
+            return project;
+        }
+        List<IssueObservation> browserIssues(ProjectObservation project) {
+            var issues = new ArrayList<IssueObservation>();
+            var ids = new LinkedHashSet<IssueIdentity>(); var numbers = new LinkedHashSet<String>();
+            for (JsonNode row : collection(GitLabUrls.project(project.externalProjectId()) + "/issues",
+                    Map.of("scope", "all", "state", "all", "order_by", "created_at", "sort", "asc"), PAGE_SIZE,
+                    limits.maxObjects(), false, true)) {
+                gate.check();
+                IssueObservation issue = issue(row, project);
+                if (!ids.add(issue.identity()) || !numbers.add(issue.issueKey())) throw GitLabErrors.invalidPagination();
+                issues.add(issue);
+            }
+            return issues;
+        }
+        JsonNode browserIssue(ProjectObservation project, String externalIssueId) {
+            // GitLab's global-ID detail endpoint requires administrator access. Resolve through the scoped collection.
+            IssueObservation match = browserIssues(project).stream().filter(issue -> externalIssueId.equals(issue.identity().externalIssueId()))
+                    .findFirst().orElseThrow(() -> GitLabCredentials.error(Code.NOT_FOUND, "GitLab issue was not found."));
+            JsonNode row = get(GitLabUrls.project(project.externalProjectId()) + "/issues/" + iid(match, project));
+            IssueObservation received = issue(row, project);
+            if (!match.identity().equals(received.identity()) || !match.issueKey().equals(received.issueKey())) throw GitLabErrors.invalidResponse();
+            return row;
         }
         ProjectObservation project(JsonNode row, String externalId, String key) {
             String receivedId = id(row, "id"); String path = text(row, "path_with_namespace", true);
@@ -322,7 +479,7 @@ public final class GitLabTickets implements TicketProviderAdapter, TicketWriteAd
                     project.projectKey() + "#" + iid, text(row, "title", true), text(row, "issue_type", false), state,
                     state.equals("closed") ? "DONE" : "TODO", null, null, instant(row, "created_at"), instant(row, "updated_at"),
                     instant(row, "closed_at"), milestones, safeUrl(row, "web_url", "/" + project.projectKey() + "/-/issues/" + iid),
-                    clock.instant(), assignee, text(row, "description", false), labels);
+                    clock.instant(), assignee, null, labels);
         }
         List<IssueObservation> members(ProjectObservation project, String milestone) {
             var issues = new ArrayList<IssueObservation>(); var ids = new LinkedHashSet<IssueIdentity>();
@@ -421,5 +578,14 @@ public final class GitLabTickets implements TicketProviderAdapter, TicketWriteAd
             };
             throw new TicketException(code, failure.getMessage());
         }
+    }
+    /** Provider-space navigation is available independently of rich content; global IDs cannot infer issue numbers. */
+    @Override public Navigation navigate(BrowserRequest request, TicketRef ticket, Access access, TicketRequestGate gate) {
+        gate.check();
+        credentials.require(request.source(), access, false);
+        definition.validateProject(request.externalProjectId(), request.projectKey());
+        if (request.revision() != null && !request.revision().equals(browserRevision(request, access))) throw staleBrowser();
+        gate.check();
+        return new Navigation(spaceUrl(request), null);
     }
 }

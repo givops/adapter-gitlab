@@ -45,8 +45,9 @@ class GitLabContractTest {
         var metadata = new java.util.Properties();
         try (var stream = getClass().getResourceAsStream("/META-INF/givops-adapter.properties")) { metadata.load(stream); }
         assertThat(metadata.getProperty("domains")).isEqualTo("ticketing,forge");
-        assertThat(metadata.getProperty("sdkApiVersion")).isEqualTo("0.2");
-        assertThat(definition.capabilities()).contains("ticketing.read", "ticketing.project-create", "ticketing.version-create", "ticketing.issue-create").doesNotContain("ticketing.write");
+        assertThat(metadata.getProperty("sdkApiVersion")).isEqualTo("0.3");
+        assertThat(definition.capabilities()).contains("ticketing.read", "ticketing.browse", "ticketing.content", "ticketing.navigation",
+                "ticketing.project-create", "ticketing.version-create", "ticketing.issue-create").doesNotContain("ticketing.write", "ticketing.assets");
         assertThat(definition.commandLabels().get("versionResource")).isEqualTo("Milestone");
         io.givops.adapters.testkit.AdapterTestkit.verifyDefinition(definition);
         io.givops.adapters.testkit.AdapterTestkit.verifyDefinition(new GitLabForgeDefinition(new GitLabProperties(Map.of())));
@@ -60,6 +61,10 @@ class GitLabContractTest {
                 .withBean(ContextSigner.class, () -> (provider, namespace, parts) -> "context")
                 .run(context -> {
                     assertThat(context).hasNotFailed().hasSingleBean(ForgeAdapter.class).hasSingleBean(TicketProviderAdapter.class)
+                            .hasSingleBean(io.givops.ticketing.port.TicketBrowseAdapter.class)
+                            .hasSingleBean(io.givops.ticketing.port.TicketContentAdapter.class)
+                            .hasSingleBean(io.givops.ticketing.port.TicketNavigationAdapter.class)
+                            .doesNotHaveBean(io.givops.ticketing.port.TicketAssetAdapter.class)
                             .hasSingleBean(ForgeProviderDefinition.class).hasSingleBean(TicketProviderDefinition.class);
                 });
     }
