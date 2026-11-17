@@ -23,6 +23,11 @@ final class GitLabForgeCapabilities implements ForgeCapabilityInspector {
     }
     @Override public ForgeProvider provider() { return ForgeProvider.GITLAB; }
     @Override public CapabilityInspection inspect(Source source, String capability, Access access, ForgeRequestGate gate) {
+        boolean discovery = capability.equals("forge.discovery") || capability.equals("forge.group-hierarchy");
+        if (discovery && access.hosting() != Hosting.SELF_MANAGED && access.hosting() != Hosting.SAAS)
+            return result(capability, State.UNSUPPORTED, "discovery_hosting_unsupported", null, source);
+        if (discovery && !GitLabCredentials.validToken(access.token()))
+            return result(capability, State.FORBIDDEN, "gitlab_unauthorized", null, source);
         var urls = new GitLabUrls(source.baseUrl());
         String version = null; State state; String reason;
         try {
@@ -31,13 +36,17 @@ final class GitLabForgeCapabilities implements ForgeCapabilityInspector {
             if (capability.equals("forge.pipeline-create") && profile.beforePipelineInputs())
                 return result(capability, State.UNSUPPORTED, "pipeline_inputs_require_gitlab_17_10", version, source);
         } catch (ForgeException failure) { /* Metadata does not determine permission for project operations. */ }
-        if (!Set.of("forge.read", "forge.probe", "forge.discovery", "forge.repository-identity", "forge.pipeline-create").contains(capability))
+        if (!Set.of("forge.read", "forge.probe", "forge.discovery", "forge.group-hierarchy", "forge.repository-identity", "forge.pipeline-create").contains(capability))
             return result(capability, State.UNSUPPORTED, "operation_not_implemented", version, source);
-        if (capability.equals("forge.discovery") && access.hosting() != Hosting.SELF_MANAGED)
-            return result(capability, State.UNSUPPORTED, "discovery_requires_self_managed_hosting", version, source);
         try {
             if (source.projectId() == null) { state = State.UNKNOWN; reason = "project_not_selected"; }
-            else {
+            else if (discovery && access.hosting() == Hosting.SAAS) {
+                if (!source.projectId().matches("[1-9][0-9]{0,18}"))
+                    return result(capability, State.UNKNOWN, "numeric_project_identity_required", version, source);
+                new GitLabDiscoveryAdapter(transport, mapper).project(
+                        new io.givops.forge.discovery.DiscoveryModels.Server(source.baseUrl()), access, source.projectId(), gate);
+                state = State.AVAILABLE; reason = "project_discovery_scope_verified";
+            } else {
                 var response = transport.get(urls.detail(GitLabUrls.project(source.projectId())), access.token(), gate);
                 var row = mapper.readTree(response.body()); GitLabPayload.requireObject(row); gate.acceptedObjects(1);
                 if (capability.equals("forge.pipeline-create")) {

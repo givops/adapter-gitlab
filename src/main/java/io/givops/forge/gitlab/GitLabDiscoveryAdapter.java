@@ -10,6 +10,7 @@ import io.givops.forge.discovery.DiscoveryModels.Server;
 import io.givops.forge.discovery.DiscoveryValues;
 import io.givops.forge.model.ForgeConnectionSettings.Hosting;
 import io.givops.forge.port.ForgeDiscoveryAdapter;
+import io.givops.forge.port.ForgeGroupHierarchyAdapter;
 import io.givops.forge.port.ForgeRequestGate;
 import io.givops.forge.port.ForgeAdapter.Access;
 import java.net.URI;
@@ -21,7 +22,7 @@ import org.springframework.http.HttpStatus;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
-public class GitLabDiscoveryAdapter implements ForgeDiscoveryAdapter {
+public class GitLabDiscoveryAdapter implements ForgeDiscoveryAdapter, ForgeGroupHierarchyAdapter {
     private final GitLabTransport transport;
     private final ObjectMapper json;
 
@@ -31,53 +32,99 @@ public class GitLabDiscoveryAdapter implements ForgeDiscoveryAdapter {
     }
 
     @Override public Support support(ForgeProvider provider, Hosting hosting) {
-        boolean supported = provider == ForgeProvider.GITLAB && hosting == Hosting.SELF_MANAGED;
+        boolean supported = supports(provider, hosting);
         return new Support(supported, supported);
+    }
+
+    @Override public boolean supports(ForgeProvider provider, Hosting hosting) {
+        return provider == ForgeProvider.GITLAB && (hosting == Hosting.SELF_MANAGED || hosting == Hosting.SAAS);
     }
 
     @Override
     public RemotePage<RemoteGroup> groups(Server server, Access access, String query, int limit, int page,
                                          long lastId, ForgeRequestGate gate) {
-        String token = access.token();
+        String token = authenticated(access);
+        validatePage(query, limit, page, lastId);
         var filters = filters(query);
-        filters.put("all_available", "true");
+        filters.put("all_available", Boolean.toString(access.hosting() != Hosting.SAAS));
         filters.put("top_level_only", "false");
         var urls = new GitLabUrls(server.baseUrl());
         // Authenticated /groups does not support GitLab keyset pagination.
         var response = readPage(urls, "/groups", filters, limit, page, token, gate);
+        return groupPage(urls, "/groups", filters, response, limit, page, lastId, null, gate);
+    }
+
+    @Override
+    public RemoteGroup group(Server server, Access access, String externalId, ForgeRequestGate gate) {
+        String token = authenticated(access);
+        DiscoveryValues.numericId(externalId);
+        var urls = new GitLabUrls(server.baseUrl());
+        // Known ancestry only: the host derives this ID from an admitted namespace/parent.
+        var result = group(parse(transport.get(urls.detail("/groups/" + externalId + "?with_projects=false"), token, gate)));
+        if (!externalId.equals(result.externalId())) throw GitLabErrors.invalidResponse();
+        gate.acceptedObjects(1);
+        return result;
+    }
+
+    @Override
+    public RemotePage<RemoteGroup> subgroups(Server server, Access access, String parentExternalId,
+                                             String query, int limit, int page, long lastId, ForgeRequestGate gate) {
+        String token = authenticated(access);
+        DiscoveryValues.numericId(parentExternalId);
+        validatePage(query, limit, page, lastId);
+        var filters = filters(query);
+        filters.put("all_available", Boolean.toString(access.hosting() != Hosting.SAAS));
+        var urls = new GitLabUrls(server.baseUrl());
+        String path = "/groups/" + parentExternalId + "/subgroups";
+        var response = readPage(urls, path, filters, limit, page, token, gate);
+        return groupPage(urls, path, filters, response, limit, page, lastId, parentExternalId, gate);
+    }
+
+    private RemotePage<RemoteGroup> groupPage(GitLabUrls urls, String path, Map<String, String> filters,
+                                             GitLabTransport.Response response, int limit, int page, long lastId,
+                                             String parentId, ForgeRequestGate gate) {
         JsonNode rows = array(response, limit);
         var result = new ArrayList<RemoteGroup>();
         long previous = lastId;
         for (JsonNode row : rows) {
-            long id = increasing(row, previous);
-            previous = id;
-            String name = text(row, "name", 1024);
-            String path = text(row, "full_path", 512);
-            String parent = optionalId(row, "parent_id");
-            result.add(new RemoteGroup(Long.toString(id), name, path, parent,
-                    DiscoveryValues.suggestedKey(path, Long.toString(id))));
+            previous = increasing(row, previous);
+            var group = group(row);
+            if (parentId != null && !parentId.equals(group.parentExternalId())) throw GitLabErrors.invalidResponse();
+            result.add(group);
         }
         gate.acceptedObjects(result.size());
-        boolean next = GitLabPages.hasNext(urls, urls.uri("/groups", filters, limit, page),
+        boolean next = GitLabPages.hasNext(urls, urls.uri(path, filters, limit, page),
                 response.headers(), filters, page, limit, result.size());
         return new RemotePage<>(result, next, previous);
+    }
+
+    private RemoteGroup group(JsonNode row) {
+        String id = requiredId(row, "id");
+        String name = text(row, "name", 1024);
+        String path = text(row, "full_path", 512);
+        String parent = optionalId(row, "parent_id");
+        if (id.equals(parent)) throw GitLabErrors.invalidResponse();
+        return new RemoteGroup(id, name, path, parent, DiscoveryValues.suggestedKey(path, id));
     }
 
     @Override
     public RemotePage<RemoteProject> projects(Server server, Access access, String groupId, String query,
                                              int limit, int page, long lastId, ForgeRequestGate gate) {
-        String token = access.token();
+        String token = authenticated(access);
+        validatePage(query, limit, page, lastId);
         var filters = filters(query);
         String path;
         int remotePage;
         if (groupId == null) {
             path = "/projects";
+            if (access.hosting() == Hosting.SAAS) filters.put("membership", "true");
             // Range traversal always uses offset page 1, including beyond 50,000 visible projects.
             if (lastId > 0) filters.put("id_after", Long.toString(lastId));
             remotePage = 1;
         } else {
             DiscoveryValues.numericId(groupId);
             path = "/groups/" + groupId + "/projects";
+            if (access.hosting() == Hosting.SAAS) filters.put("min_access_level", "10");
             filters.put("with_shared", "false");
             filters.put("include_subgroups", "false");
             remotePage = page;
@@ -102,14 +149,41 @@ public class GitLabDiscoveryAdapter implements ForgeDiscoveryAdapter {
 
     @Override
     public RemoteProject project(Server server, Access access, String externalId, ForgeRequestGate gate) {
-        String token = access.token();
+        String token = authenticated(access);
         DiscoveryValues.numericId(externalId);
         var urls = new GitLabUrls(server.baseUrl());
-        var row = parse(transport.get(urls.detail("/projects/" + externalId), token, gate));
+        JsonNode row;
+        if (access.hosting() == Hosting.SAAS) {
+            // GET /projects/:id only proves visibility. Verify current account membership
+            // using an exact bounded numeric range, including inherited/personal membership.
+            long id = DiscoveryValues.numericId(externalId);
+            var filters = filters("");
+            filters.put("membership", "true");
+            filters.put("id_after", Long.toString(id - 1));
+            if (id < Long.MAX_VALUE) filters.put("id_before", Long.toString(id + 1));
+            var response = readPage(urls, "/projects", filters, 1, 1, token, gate);
+            JsonNode rows = array(response, 1);
+            GitLabPages.hasNext(urls, urls.uri("/projects", filters, 1, 1), response.headers(), filters, 1, 1, rows.size());
+            if (rows.isEmpty()) throw GitLabErrors.remoteStatus(403);
+            row = rows.get(0);
+        } else {
+            row = parse(transport.get(urls.detail("/projects/" + externalId), token, gate));
+        }
         RemoteProject result = project(server, row);
         if (!externalId.equals(result.externalId())) throw GitLabErrors.invalidResponse();
         gate.acceptedObjects(1);
         return result;
+    }
+
+    private String authenticated(Access access) {
+        if (access == null || !supports(ForgeProvider.GITLAB, access.hosting())) throw GitLabErrors.invalidConfiguration();
+        if (!GitLabCredentials.validToken(access.token())) throw GitLabErrors.remoteStatus(401);
+        return access.token();
+    }
+
+    private static void validatePage(String query, int limit, int page, long lastId) {
+        if (query == null || query.length() > 200 || query.codePoints().anyMatch(Character::isISOControl)
+                || limit < 1 || limit > 100 || page < 1 || lastId < 0) throw GitLabErrors.invalidConfiguration();
     }
 
     private GitLabTransport.Response readPage(GitLabUrls urls, String path, Map<String, String> filters,

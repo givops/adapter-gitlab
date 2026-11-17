@@ -60,7 +60,8 @@ class GitLabContractTest {
                 .withBean(ContextSigner.class, () -> (provider, namespace, parts) -> "context")
                 .run(context -> {
                     assertThat(context).hasNotFailed().hasSingleBean(ForgeAdapter.class).hasSingleBean(TicketProviderAdapter.class)
-                            .hasSingleBean(ForgeProviderDefinition.class).hasSingleBean(TicketProviderDefinition.class);
+                            .hasSingleBean(ForgeProviderDefinition.class).hasSingleBean(TicketProviderDefinition.class)
+                            .hasSingleBean(io.givops.forge.port.ForgeGroupHierarchyAdapter.class);
                 });
     }
     @Test void broadHostScanningDoesNotEvaluateOptionalDomainsBeforeHostBeans() {
