@@ -65,7 +65,8 @@ class GitLabContractTest {
                             .hasSingleBean(io.givops.ticketing.port.TicketContentAdapter.class)
                             .hasSingleBean(io.givops.ticketing.port.TicketNavigationAdapter.class)
                             .doesNotHaveBean(io.givops.ticketing.port.TicketAssetAdapter.class)
-                            .hasSingleBean(ForgeProviderDefinition.class).hasSingleBean(TicketProviderDefinition.class);
+                            .hasSingleBean(ForgeProviderDefinition.class).hasSingleBean(TicketProviderDefinition.class)
+                            .hasSingleBean(io.givops.forge.port.ForgeGroupHierarchyAdapter.class);
                 });
     }
     @Test void broadHostScanningDoesNotEvaluateOptionalDomainsBeforeHostBeans() {
