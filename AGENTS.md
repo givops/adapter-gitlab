@@ -7,6 +7,7 @@ isolated task worktree. Run Maven verify for code changes. Default tests use
 synthetic responses and local HTTPS only. Preserve security and resource bounds.
 
 Before merging a PR, run `./scripts/verify-local.sh` on its final commit and
-report the actual results. All verification belongs locally; GitHub Actions is
-reserved for package releases. Keep every removed hosted check in the local
+report the actual results. Build and test verification runs locally.
+GitHub Actions runs package releases where configured and automatic CodeQL
+security scans. Keep every removed hosted check in the local
 verification entrypoint. Do not skip tests to obtain a successful verification.
