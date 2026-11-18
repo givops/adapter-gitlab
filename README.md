@@ -3,8 +3,8 @@
 One Apache-2.0 library supplies **GitLab ticketing and forge** through the public
 [GivOps adapter SDK](https://github.com/givops/adapter-sdk). The private GivOps
 application is not a build dependency. Java 25 and Spring Boot 4.0.9 are the
-supported runtime baseline. Install `adapter-gitlab-0.4.0-SNAPSHOT.jar` with a host
-supporting SDK API **0.4**, then restart it. Either domain can be configured alone.
+supported runtime baseline. Install `adapter-gitlab-0.5.0-SNAPSHOT.jar` with a host
+supporting SDK API **0.5**, then restart it. Either domain can be configured alone.
 
 ## Build and test
 
@@ -198,7 +198,7 @@ access on group projects and member-only subgroup collection behavior.
 
 ## Product versions and API profiles
 
-SDK API `0.4`, adapter artifact `0.4.0-SNAPSHOT`, GitLab product version and remote
+SDK API `0.5`, adapter artifact `0.5.0-SNAPSHOT`, GitLab product version and remote
 API profiles are separate values. Profiles are observed per instance/project and
 credentials; there is no cross-tenant version or permission cache.
 
@@ -231,10 +231,10 @@ The 17/19 matrix describes the tested API profiles, not a claim that this suite
 has exercised live servers of those versions. Live validation is a separate,
 explicit step using disposable projects and supplied credentials.
 
-### SDK API 0.4 compatibility
+### SDK API 0.5 compatibility
 
-This source requires the exact public SDK API 0.4 and artifact version
-0.4.0-SNAPSHOT. Observation acquisition is metadata-only: issue descriptions and
+This source requires the exact public SDK API 0.5 and artifact version
+0.5.0-SNAPSHOT. Observation acquisition is metadata-only: issue descriptions and
 comments are not mapped. Existing creation/write descriptions and forge
 merge-request descriptions retain their existing behavior. This provider advertises
 optional transient browsing and Markdown content, without assets or immutable
@@ -243,7 +243,7 @@ space links without a content fetch. Detail supplies a validated ticket link aft
 resolving the stable global ID to its project IID; navigation alone leaves an
 unknown ticket link absent.
 
-The SDK source pin selects merged API 0.4 commit `762b642cedc1b82bb4915af56313e6e3c194a04f`.
+The SDK source pin selects merged API 0.5 commit `8226eab4967b8482327ad3cbc4b20c4e92a33ed1`.
 Run `./scripts/build.sh` to build and verify against that exact public SDK.
 The artifact remains a development snapshot; a source pin does not imply a tagged release.
 

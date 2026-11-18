@@ -60,12 +60,16 @@ class GitLabContractTest {
         var metadata = new java.util.Properties();
         try (var stream = getClass().getResourceAsStream("/META-INF/givops-adapter.properties")) { metadata.load(stream); }
         assertThat(metadata.getProperty("domains")).isEqualTo("ticketing,forge");
-        assertThat(metadata.getProperty("sdkApiVersion")).isEqualTo("0.4");
+        var forgeDefinition = new GitLabForgeDefinition(new GitLabProperties(Map.of()));
+        assertThat(metadata.getProperty("sdkApiVersion")).isEqualTo("0.5")
+                .isEqualTo(definition.sdkApiVersion()).isEqualTo(forgeDefinition.sdkApiVersion());
+        assertThat(metadata.getProperty("adapterVersion")).isEqualTo("0.5.0-SNAPSHOT")
+                .isEqualTo(definition.adapterVersion()).isEqualTo(forgeDefinition.adapterVersion());
         assertThat(definition.capabilities()).contains("ticketing.read", "ticketing.browse", "ticketing.content", "ticketing.navigation",
                 "ticketing.project-create", "ticketing.version-create", "ticketing.issue-create").doesNotContain("ticketing.write", "ticketing.assets");
         assertThat(definition.commandLabels().get("versionResource")).isEqualTo("Milestone");
         io.givops.adapters.testkit.AdapterTestkit.verifyDefinition(definition);
-        io.givops.adapters.testkit.AdapterTestkit.verifyDefinition(new GitLabForgeDefinition(new GitLabProperties(Map.of())));
+        io.givops.adapters.testkit.AdapterTestkit.verifyDefinition(forgeDefinition);
         definition.validateCreateProjectKey("new-project");
         assertThatThrownBy(() -> definition.validateProjectKey("new-project")).isInstanceOf(RuntimeException.class);
     }
