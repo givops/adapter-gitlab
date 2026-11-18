@@ -268,3 +268,14 @@ The generic runner does not use a separate GitLab REST client.
 Issue commands also accept explicit NAME or EXTERNAL_ID version selectors. Names
 resolve uniquely to project milestone IDs; legacy `fixVersions` strings remain IDs.
 Closed milestones remain distinct from released Jira/YouTrack versions.
+
+
+## Local verification before merging
+
+Run `./scripts/verify-local.sh` on the final source with Java 25 and Maven 3.9+.
+It builds the public SDK and adapter tests locally; no provider account or private
+repository is required. Record the command and results before merging each PR.
+Build and test verification runs locally before merging. GitHub Actions runs
+package releases where configured and automatic CodeQL security scans.
+`GIVOPS_MAVEN_REPOSITORY` selects an isolated Maven cache (default `.m2-local/`).
+Do not share a cache between concurrent snapshot builds.
