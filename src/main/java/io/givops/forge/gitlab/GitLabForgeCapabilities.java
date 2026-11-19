@@ -68,7 +68,7 @@ final class GitLabForgeCapabilities implements ForgeCapabilityInspector {
                 case "gitlab_timeout", "gitlab_rate_limited", "gitlab_unavailable", "gitlab_transport_failed" -> State.TEMPORARILY_UNAVAILABLE;
                 default -> State.UNKNOWN;
             };
-            reason = failure.getCode();
+            reason = failure.diagnosticEvidence() == null ? failure.getCode() : failure.diagnosticEvidence();
         } catch (tools.jackson.core.JacksonException failure) { state = State.UNKNOWN; reason = "gitlab_invalid_response"; }
         return result(capability, state, reason, version, source);
     }

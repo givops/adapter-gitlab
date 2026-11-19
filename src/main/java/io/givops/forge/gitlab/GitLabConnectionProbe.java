@@ -81,14 +81,17 @@ class GitLabConnectionProbe implements ForgeApiProbe {
         if (response.status() != 200) {
             var failure = GitLabErrors.remoteStatus(response.status());
             return new Observation(optional && response.status() == 404 ? OperationStatus.UNKNOWN : OperationStatus.FAILED,
-                    failure.getCode(), response.headers());
+                    failure.getCode(), response.headers(), response.status());
+        }
+        if (response.headers().firstValue("Content-Type").orElse("").split(";", 2)[0].strip().equalsIgnoreCase("text/html")) {
+            throw GitLabErrors.invalidResponse().withHttpResponse(response.status(), "text/html");
         }
         try {
             JsonNode body = json.readTree(response.body());
             if (body == null || body.isMissingNode()) throw GitLabErrors.invalidResponse();
             validate.accept(body);
         } catch (JacksonException exception) {
-            throw GitLabErrors.invalidResponse();
+            throw GitLabErrors.invalidResponse().withHttpResponse(response.status(), response.headers().firstValue("Content-Type").orElse(null));
         }
         return null;
     }

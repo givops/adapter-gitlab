@@ -113,6 +113,22 @@ class GitLabTransportTest {
     }
 
     @Test
+    void usesTheSelectedForgeTrustForRealApiReadsAndKeepsSystemTrustForOtherChecks() {
+        var selected = io.givops.adapters.ConnectionTarget.forge(java.util.UUID.randomUUID());
+        var remote = uri("localhost", "/ok");
+        try (var custom = GitLabTransport.clientBuilder(CONNECT_TIMEOUT).sslContext(trust).build();
+             var transport = new GitLabTransport(GitLabTransport.clientBuilder(CONNECT_TIMEOUT).build(), 1024,
+                     (target, destination, fallback) -> selected.equals(target) && remote.equals(destination) ? custom : fallback)) {
+            var site = new Gate() {
+                @Override public io.givops.adapters.ConnectionTarget connectionTarget() { return selected; }
+            };
+            assertThat(transport.get(remote, TOKEN, site).status()).isEqualTo(200);
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> transport.getForCheck(remote, TOKEN, new Gate()))
+                    .hasMessageContaining("certificate chain").hasMessageNotContaining(TOKEN);
+        }
+    }
+
+    @Test
     void verifiesCertificatesAndHostnames() {
         try (var production = new GitLabTransport(CONNECT_TIMEOUT, 1024);
              var localTrust = trustedTransport(1024)) {
