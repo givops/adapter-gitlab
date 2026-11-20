@@ -25,12 +25,16 @@ final class GitLabPayload {
     private GitLabPayload() {}
 
     static ChangeRequest changeRequest(JsonNode node, Instant observedAt) {
+        return changeRequest(node, observedAt, true);
+    }
+
+    static ChangeRequest changeRequest(JsonNode node, Instant observedAt, boolean observePipeline) {
         requireObject(node);
         Boolean draft = flag(node, "draft");
         if (draft == null) {
             draft = flag(node, "work_in_progress");
         }
-        JsonNode head = node.get("head_pipeline");
+        JsonNode head = observePipeline ? node.get("head_pipeline") : null;
         String state = text(node, "state", true);
         String mergeStatus = text(node, "detailed_merge_status", false);
         if (mergeStatus == null) mergeStatus = text(node, "merge_status", false);
@@ -44,8 +48,11 @@ final class GitLabPayload {
                 assignees(node), people(node.get("reviewers")), labels(node.get("labels")),
                 instant(node, "created_at"), instant(node, "updated_at"), instant(node, "merged_at"),
                 instant(node, "closed_at"), missing(head) ? null : pipeline(head, observedAt), observedAt,
-                "opened".equals(state) ? signals(null, Set.of(), false, mergeStatus, missing(head) ? null : pipeline(head, observedAt)) : null,
-                lifecycle(state), List.of(), List.of(), new PipelineCoverage(PipelineCoverageState.OBSERVED, "gitlab_head_pipeline"));
+                "opened".equals(state) ? signals(null, Set.of(), false, mergeStatus,
+                        missing(head) ? null : pipeline(head, observedAt), observePipeline) : null,
+                lifecycle(state), List.of(), List.of(), observePipeline
+                        ? new PipelineCoverage(PipelineCoverageState.OBSERVED, "gitlab_head_pipeline")
+                        : new PipelineCoverage(PipelineCoverageState.UNKNOWN, "not_observed"));
     }
 
     static ChangeRequestLifecycle lifecycle(String state) {
@@ -58,6 +65,11 @@ final class GitLabPayload {
     }
 
     static TaskSignals signals(Integer unresolved, Set<String> approved, boolean approvalsKnown, String mergeStatus, Pipeline pipeline) {
+        return signals(unresolved, approved, approvalsKnown, mergeStatus, pipeline, true);
+    }
+
+    private static TaskSignals signals(Integer unresolved, Set<String> approved, boolean approvalsKnown,
+                                       String mergeStatus, Pipeline pipeline, boolean observePipeline) {
         ConflictState conflict = mergeStatus == null ? ConflictState.UNKNOWN : switch (mergeStatus) {
             case "cannot_be_merged", "conflict" -> ConflictState.CONFLICT;
             case "can_be_merged", "mergeable" -> ConflictState.CLEAR;
@@ -70,7 +82,8 @@ final class GitLabPayload {
             default -> CiState.UNKNOWN;
         };
         return new TaskSignals(unresolved, approved, approvalsKnown, mergeStatus,
-                new CiSummary(ci, PipelineCoverageState.OBSERVED, "gitlab_head_pipeline"), conflict, ReviewerCoverage.COMPLETE);
+                new CiSummary(ci, observePipeline ? PipelineCoverageState.OBSERVED : PipelineCoverageState.UNKNOWN,
+                        observePipeline ? "gitlab_head_pipeline" : "not_observed"), conflict, ReviewerCoverage.COMPLETE);
     }
 
     static boolean hasUnresolvedNote(JsonNode notes) {

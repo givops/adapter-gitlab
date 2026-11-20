@@ -36,7 +36,7 @@ final class GitLabForgeCapabilities implements ForgeCapabilityInspector {
             if (capability.equals("forge.pipeline-create") && profile.beforePipelineInputs())
                 return result(capability, State.UNSUPPORTED, "pipeline_inputs_require_gitlab_17_10", version, source);
         } catch (ForgeException failure) { /* Metadata does not determine permission for project operations. */ }
-        if (!Set.of("forge.read", "forge.probe", "forge.discovery", "forge.group-hierarchy", "forge.repository-create", "forge.repository-identity", "forge.pipeline-create").contains(capability))
+        if (!Set.of("forge.read", "forge.open-change-requests", "forge.probe", "forge.discovery", "forge.group-hierarchy", "forge.repository-create", "forge.repository-identity", "forge.pipeline-create").contains(capability))
             return result(capability, State.UNSUPPORTED, "operation_not_implemented", version, source);
         try {
             if (capability.equals("forge.repository-create")) {
@@ -58,7 +58,9 @@ final class GitLabForgeCapabilities implements ForgeCapabilityInspector {
                     if ("disabled".equals(row.path("builds_access_level").asText())) { state = State.DISABLED; reason = "project_ci_disabled"; }
                     else { state = State.UNKNOWN; reason = "pipeline_schema_and_ref_permission_require_inspection"; }
                 } else {
-                    transport.get(urls.uri(GitLabUrls.project(source.projectId()) + "/merge_requests", Map.of("state", "opened"), 1, 1), access.token(), gate);
+                    var filters = capability.equals("forge.open-change-requests")
+                            ? Map.of("state", "opened", "scope", "all", "wip", "no") : Map.of("state", "opened");
+                    transport.get(urls.uri(GitLabUrls.project(source.projectId()) + "/merge_requests", filters, 1, 1), access.token(), gate);
                     state = State.AVAILABLE; reason = "project_endpoint_readable";
                 }
             }

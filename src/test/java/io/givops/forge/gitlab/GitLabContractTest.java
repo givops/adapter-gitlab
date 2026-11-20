@@ -61,6 +61,7 @@ class GitLabContractTest {
         try (var stream = getClass().getResourceAsStream("/META-INF/givops-adapter.properties")) { metadata.load(stream); }
         assertThat(metadata.getProperty("domains")).isEqualTo("ticketing,forge");
         var forgeDefinition = new GitLabForgeDefinition(new GitLabProperties(Map.of()));
+        assertThat(forgeDefinition.capabilities()).contains("forge.open-change-requests");
         assertThat(metadata.getProperty("sdkApiVersion")).isEqualTo("0.5")
                 .isEqualTo(definition.sdkApiVersion()).isEqualTo(forgeDefinition.sdkApiVersion());
         assertThat(metadata.getProperty("adapterVersion")).isEqualTo("0.5.0-SNAPSHOT")
@@ -85,7 +86,8 @@ class GitLabContractTest {
                             .hasSingleBean(io.givops.ticketing.port.TicketNavigationAdapter.class)
                             .doesNotHaveBean(io.givops.ticketing.port.TicketAssetAdapter.class)
                             .hasSingleBean(ForgeProviderDefinition.class).hasSingleBean(TicketProviderDefinition.class)
-                            .hasSingleBean(io.givops.forge.port.ForgeGroupHierarchyAdapter.class);
+                            .hasSingleBean(io.givops.forge.port.ForgeGroupHierarchyAdapter.class)
+                            .hasSingleBean(io.givops.forge.port.OpenChangeRequestReader.class);
                 });
     }
     @Test void broadHostScanningDoesNotEvaluateOptionalDomainsBeforeHostBeans() {
