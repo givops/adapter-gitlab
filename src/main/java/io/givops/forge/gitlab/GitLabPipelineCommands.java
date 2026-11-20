@@ -75,7 +75,7 @@ public class GitLabPipelineCommands implements PipelineCommandProvider {
         String base = repository.baseUrl().toASCIIString().replaceFirst("/$", "");
         var request = Map.of("query", QUERY, "variables", Map.of("path", repository.path(), "ref", fullRef));
         var response = transport.post(URI.create(base + "/api/graphql"), credential.token(), payload(request),
-                new Gate(properties.requestTimeout()), 200);
+                new Gate(properties.requestTimeout(), repository.forgeId()), 200);
         if (response.status() == 401 || response.status() == 403) {
             throw new ForgeException("pipeline_inputs_forbidden", HttpStatus.FORBIDDEN,
                     GitLabMessages.format("forge.gitLabPipelineCommands.gitlab.denied.access.to.pipeline.input.definitions"));
@@ -118,7 +118,7 @@ public class GitLabPipelineCommands implements PipelineCommandProvider {
         byte[] body = payload(request);
         try {
             var response = transport.post(urls.detail(GitLabUrls.project(repository.externalId()) + "/pipeline"),
-                    credential.token(), body, new Gate(properties.requestTimeout()), 201);
+                    credential.token(), body, new Gate(properties.requestTimeout(), repository.forgeId()), 201);
             if (response.status() != 201) {
                 var failure = GitLabErrors.remoteStatus(response.status());
                 return Result.failure(failure.getCode(), response.status() < 300
@@ -150,7 +150,7 @@ public class GitLabPipelineCommands implements PipelineCommandProvider {
         GitLabVersions.Profile profile;
         try {
             profile = GitLabVersions.read(transport, new GitLabUrls(repository.baseUrl()), credential.token(),
-                    new Gate(properties.requestTimeout()), mapper.reader());
+                    new Gate(properties.requestTimeout(), repository.forgeId()), mapper.reader());
         } catch (ForgeException failure) {
             if (Set.of("gitlab_not_found", "gitlab_forbidden", "gitlab_unauthorized", "gitlab_invalid_response")
                     .contains(failure.getCode())) return;
@@ -219,7 +219,12 @@ public class GitLabPipelineCommands implements PipelineCommandProvider {
         private final Duration timeout;
         private long bytes;
 
-        private Gate(Duration timeout) { this.timeout = timeout; }
+        private final io.givops.adapters.ConnectionTarget target;
+        private Gate(Duration timeout, java.util.UUID forgeId) {
+            this.timeout = timeout;
+            this.target = forgeId == null ? null : io.givops.adapters.ConnectionTarget.forge(forgeId);
+        }
+        @Override public io.givops.adapters.ConnectionTarget connectionTarget() { return target; }
 
         @Override public Duration beforeRequest() { return timeout; }
 

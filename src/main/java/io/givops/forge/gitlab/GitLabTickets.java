@@ -246,7 +246,7 @@ public final class GitLabTickets implements TicketProviderAdapter, TicketWriteAd
                 case "gitlab_timeout", "gitlab_transport_failed", "gitlab_rate_limited", "gitlab_unavailable" -> CapabilityInspection.State.TEMPORARILY_UNAVAILABLE;
                 default -> CapabilityInspection.State.UNKNOWN;
             };
-            reason = failure.getCode();
+            reason = failure.diagnosticEvidence() == null ? failure.getCode() : failure.diagnosticEvidence();
         }
         return new CapabilityInspection("GITLAB", capability, state, reason, product, "gitlab-rest-v4", access.context(), clock.instant());
     }
@@ -374,6 +374,9 @@ public final class GitLabTickets implements TicketProviderAdapter, TicketWriteAd
         Session(GitLabCredentials.Captured captured, TicketRequestGate host) {
             this.captured = captured; this.urls = new GitLabUrls(captured.source().baseUrl());
             this.gate = new ForgeRequestGate() {
+                @Override public io.givops.adapters.ConnectionTarget connectionTarget() {
+                    return io.givops.adapters.ConnectionTarget.ticketing(captured.source().instanceId());
+                }
                 @Override public Duration beforeRequest() { credentials.require(captured.source(), captured, false); return host.beforeRequest(); }
                 @Override public void receivedBytes(long count) { host.receivedBytes(count); }
                 @Override public void acceptedObjects(int count) { host.acceptedObjects(count); }
