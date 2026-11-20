@@ -3,6 +3,7 @@ package io.givops.forge.gitlab;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import io.givops.adapters.CapabilityInspection.State;
 import io.givops.catalog.ForgeProvider;
 import io.givops.forge.config.ForgeProperties;
 import io.givops.forge.gitlab.GitLabTestFixture.Gate;
@@ -36,6 +37,36 @@ class GitLabOpenChangeRequestsTest {
     private static final Source SOURCE = new Source(UUID.randomUUID(), UUID.randomUUID(), "gitlab",
             ForgeProvider.GITLAB, URI.create("https://git.example.test/git/"), 0, "team/service");
     private static final Access ACCESS = new Access("synthetic-token", Hosting.SELF_MANAGED);
+
+    @ParameterizedTest
+    @CsvSource({"200,AVAILABLE,project_endpoint_readable", "403,FORBIDDEN,HTTP 403 from the remote endpoint."})
+    void inspectsTheDeclaredCapabilityWithTheScopedMergeRequestReadProbe(int status, State expected, String reason) {
+        var fixture = new GitLabTestFixture(request -> {
+            assertThat(request.method()).isEqualTo("GET");
+            assertThat(request.headers().firstValue("PRIVATE-TOKEN")).contains("synthetic-token");
+            return switch (request.uri().getRawPath()) {
+                case "/git/api/v4/metadata" -> new Reply("{\"version\":\"17.9.0\"}");
+                case "/git/api/v4/projects/team%2Fservice" -> new Reply("{}");
+                case "/git/api/v4/projects/team%2Fservice/merge_requests" -> {
+                    assertThat(request.uri().getRawQuery().split("&")).containsExactlyInAnyOrder(
+                            "state=opened", "scope=all", "wip=no", "per_page=1", "page=1");
+                    yield new Reply(status, Map.of(), status == 200 ? "[]" : "synthetic-provider-error");
+                }
+                default -> throw new AssertionError("Unexpected capability request: " + request.uri());
+            };
+        });
+        assertThat(new GitLabForgeDefinition(new GitLabProperties(Map.of())).capabilities())
+                .contains("forge.open-change-requests");
+        var inspector = new GitLabForgeCapabilities(new GitLabTransport(fixture.client, 1024 * 1024),
+                JsonMapper.builder().build(), Clock.fixed(NOW, ZoneOffset.UTC));
+        var result = inspector.inspect(SOURCE, "forge.open-change-requests", ACCESS, new Gate());
+
+        assertThat(result.state()).isEqualTo(expected);
+        assertThat(result.reason()).isEqualTo(reason);
+        assertThat(fixture.requests).extracting(request -> request.uri().getRawPath()).containsExactly(
+                "/git/api/v4/metadata", "/git/api/v4/projects/team%2Fservice",
+                "/git/api/v4/projects/team%2Fservice/merge_requests");
+    }
 
     @Test void readsOnlyTheCollectionAcrossPagesAndAllTargetBranchesWithoutPipelineEnrichment() {
         var fixture = new GitLabTestFixture(request -> {
