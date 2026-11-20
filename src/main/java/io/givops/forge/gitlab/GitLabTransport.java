@@ -1,6 +1,7 @@
 package io.givops.forge.gitlab;
 
 
+import io.givops.adapters.ConnectionClients;
 import io.givops.forge.model.ForgeException;
 import io.givops.forge.port.ForgeRequestGate;
 import io.givops.integrations.checks.ConnectionCheckException;
@@ -26,6 +27,7 @@ import org.springframework.http.HttpStatus;
 
 final class GitLabTransport implements AutoCloseable {
     private final HttpClient client;
+    private final ConnectionClients clients;
     private final long maxResponseBytes;
 
     GitLabTransport(Duration connectTimeout, long maxResponseBytes) {
@@ -33,6 +35,11 @@ final class GitLabTransport implements AutoCloseable {
     }
 
     GitLabTransport(HttpClient client, long maxResponseBytes) {
+        this(client, maxResponseBytes, ConnectionClients.SYSTEM);
+    }
+
+    GitLabTransport(HttpClient client, long maxResponseBytes, ConnectionClients clients) {
+        this.clients = clients;
         this.client = client;
         this.maxResponseBytes = maxResponseBytes;
     }
@@ -43,7 +50,10 @@ final class GitLabTransport implements AutoCloseable {
 
     Response get(URI uri, String token, ForgeRequestGate gate) {
         var response = getForCheck(uri, token, gate);
-        if (response.status() != 200) throw GitLabErrors.remoteStatus(response.status());
+        if (response.status() != 200) {
+            throw GitLabErrors.remoteStatus(response.status()).withHttpResponse(response.status(),
+                    response.headers().firstValue("Content-Type").orElse(null));
+        }
         return response;
     }
 
@@ -78,7 +88,8 @@ final class GitLabTransport implements AutoCloseable {
         }
         Duration timeout = gate.beforeRequest();
         long started = System.nanoTime();
-        CompletableFuture<HttpResponse<byte[]>> pending = client.sendAsync(request.timeout(timeout).build(),
+        var selected = clients.select(gate.connectionTarget(), uri, client);
+        CompletableFuture<HttpResponse<byte[]>> pending = selected.sendAsync(request.timeout(timeout).build(),
                 info -> new LimitedBody(gate, maxResponseBytes, retainBody.test(info.statusCode())));
         try {
             // The subscriber completes only after the whole bounded body has arrived.
@@ -109,7 +120,7 @@ final class GitLabTransport implements AutoCloseable {
             if (cause instanceof HttpTimeoutException) {
                 throw GitLabErrors.timeout();
             }
-            throw GitLabErrors.connectionFailed();
+            throw GitLabErrors.connectionFailed().withTransportFailure(cause);
         }
     }
 

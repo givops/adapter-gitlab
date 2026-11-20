@@ -47,6 +47,12 @@ Managed credentials expose one secret field, `apiToken`; requests use GitLab's
 required project membership. Actual project and token permissions remain decisive.
 No credential value is returned in errors or diagnostic `toString()` output.
 
+For a project's Git connection, copy **Code → Clone with HTTPS** from GitLab,
+including the `.git` suffix, for example `https://gitlab.example.org/team/payments.git`.
+In a GivOps installation with **Admin → Security → Trusted certificate authorities**,
+upload your internal CA's public PEM once. Retry **Check forge API** and
+**Check Git HTTPS** with the site's certificate-chain exception unchecked.
+
 Runtime credential fallback is supported through the same definition for both
 domains, with a mandatory destination pin:
 
@@ -68,7 +74,7 @@ Rotation/revocation invalidates captured access. Forge receives host-captured
 access and a host admission gate. Anonymous forge reads and identity lookup remain
 supported. Native ticketing currently requires a token.
 
-All requests retain TLS verification, refuse redirects, use connect and total-body
+Requests use the host-selected HTTPS trust policy, verify the hostname, refuse redirects, use connect and total-body
 timeouts, and count response bytes and objects. Remote pagination links are
 validated against the original destination/path and filters, then regenerated.
 The adapter never forwards remote links with credentials. Reads and writes do not

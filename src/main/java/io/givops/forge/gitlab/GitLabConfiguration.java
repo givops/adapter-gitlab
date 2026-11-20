@@ -1,5 +1,7 @@
 package io.givops.forge.gitlab;
 
+import io.givops.adapters.ConnectionClients;
+import org.springframework.beans.factory.ObjectProvider;
 import io.givops.adapters.ContextSigner;
 import io.givops.adapters.CredentialHost;
 import io.givops.forge.config.ForgeProperties;
@@ -21,7 +23,10 @@ public class GitLabConfiguration {
 
     @ConditionalOnBean(ForgeProperties.class)
     static class ForgeConfiguration {
-        @Bean GitLabTransport gitLabForgeTransport(ForgeProperties limits) { return new GitLabTransport(limits.requestTimeout(), limits.maxResponseBytes()); }
+        @Bean GitLabTransport gitLabForgeTransport(ForgeProperties limits, ObjectProvider<ConnectionClients> clients) {
+            return new GitLabTransport(GitLabTransport.clientBuilder(limits.requestTimeout()).build(), limits.maxResponseBytes(),
+                    clients.getIfAvailable(() -> ConnectionClients.SYSTEM));
+        }
         @Bean GitLabAdapter gitLabAdapter(ForgeProperties limits, GitLabTransport gitLabForgeTransport, JsonMapper json, Clock clock) {
             return new GitLabAdapter(limits, gitLabForgeTransport, json, clock);
         }
@@ -42,7 +47,10 @@ public class GitLabConfiguration {
     }
     @ConditionalOnBean({CredentialHost.class, ContextSigner.class, TicketProperties.class})
     static class TicketConfiguration {
-        @Bean GitLabTransport gitLabTicketTransport(TicketProperties limits) { return new GitLabTransport(limits.requestTimeout(), limits.maxResponseBytes()); }
+        @Bean GitLabTransport gitLabTicketTransport(TicketProperties limits, ObjectProvider<ConnectionClients> clients) {
+            return new GitLabTransport(GitLabTransport.clientBuilder(limits.requestTimeout()).build(), limits.maxResponseBytes(),
+                    clients.getIfAvailable(() -> ConnectionClients.SYSTEM));
+        }
         @Bean GitLabTickets gitLabTickets(CredentialHost host, ContextSigner signer, TicketProperties limits,
                                          GitLabTransport gitLabTicketTransport, JsonMapper json, Clock clock, GitLabTicketDefinition definition) {
             return new GitLabTickets(new GitLabCredentials(host, signer), limits, gitLabTicketTransport, json, clock, definition);
