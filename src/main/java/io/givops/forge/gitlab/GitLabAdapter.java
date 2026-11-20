@@ -24,6 +24,7 @@ import io.givops.forge.model.ForgeModels.Source;
 import io.givops.forge.model.ForgeModels.TaskSignals;
 import io.givops.forge.port.ForgeAdapter;
 import io.givops.forge.port.ForgeRequestGate;
+import io.givops.forge.port.OpenChangeRequestReader;
 import java.net.URI;
 import java.time.Clock;
 import java.time.Instant;
@@ -44,7 +45,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectReader;
 import tools.jackson.databind.json.JsonMapper;
 
-public final class GitLabAdapter implements ForgeAdapter {
+public final class GitLabAdapter implements ForgeAdapter, OpenChangeRequestReader {
     private static final Pattern FULL_SHA = Pattern.compile("(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})");
     private static final String HEADS = "refs/heads/";
     private static final String UNKNOWN = "UNKNOWN";
@@ -103,6 +104,12 @@ public final class GitLabAdapter implements ForgeAdapter {
                 new PipelineCoverage(PipelineCoverageState.OBSERVED, "exact_ref_sha_pipelines_endpoint"));
     }
 
+    @Override
+    public List<ChangeRequest> readOpenChangeRequests(Source source, ForgeRequestGate gate, Access access) {
+        gate.check();
+        return new Read(source, Map.of(), gate, access).openChangeRequests();
+    }
+
     private final class Read {
         private final Map<String, CachedAssociations> cachedAssociations;
         private final ForgeRequestGate gate;
@@ -120,6 +127,26 @@ public final class GitLabAdapter implements ForgeAdapter {
             this.access = access;
             urls = new GitLabUrls(source.baseUrl());
             projectPath = GitLabUrls.project(source.projectId());
+        }
+
+        private List<ChangeRequest> openChangeRequests() {
+            // wip=no also supports GitLab versions predating the draft filter introduced in 19.0.
+            var filters = new LinkedHashMap<String, String>();
+            filters.put("state", "opened");
+            filters.put("scope", "all");
+            filters.put("wip", "no");
+            readCollection(projectPath + "/merge_requests", filters, (item, observedAt) -> {
+                GitLabPayload.requireObject(item);
+                if (!"opened".equals(GitLabPayload.text(item, "state", true))) return;
+                Boolean draft = GitLabPayload.flag(item, "draft");
+                Boolean legacyDraft = GitLabPayload.flag(item, "work_in_progress");
+                if (Boolean.TRUE.equals(draft) || Boolean.TRUE.equals(legacyDraft)) return;
+                if (draft == null && legacyDraft == null) throw GitLabErrors.invalidResponse();
+                merge(new SeenMergeRequest(GitLabPayload.changeRequest(item, observedAt, false),
+                        Observation.OPEN, false));
+            });
+            gate.check();
+            return changeRequests.values().stream().map(SeenMergeRequest::value).toList();
         }
 
         private Snapshot snapshot(Selection selection) {

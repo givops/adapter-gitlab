@@ -163,6 +163,14 @@ Preserves open merge requests, commit associations and their cache precedence,
 current merge-request head pipelines, branch pipelines selected by exact ref/SHA,
 discussions, approvals, connection probes and explicit pipeline commands.
 Provider lifecycle, conflict and CI states are normalized in this library.
+The optional `forge.open-change-requests` port reads only the paginated project
+`GET /projects/:id/merge_requests` collection with `state=opened`, `scope=all`
+and `wip=no`, across every target branch. The native `wip` filter supports older
+GitLab profiles; [GitLab 19.0 introduced `draft` and deprecated `wip`](https://docs.gitlab.com/api/merge_requests/#list-project-merge-requests).
+Returned rows are also filtered locally using `draft` and legacy
+`work_in_progress`; an open row without either draft flag fails the read. This read makes
+no metadata, detail, pipeline, association, discussion or approval requests and
+keeps pipeline and CI coverage unknown even if the collection embeds a pipeline.
 Authenticated discovery and the optional `forge.group-hierarchy` capability support
 **Self-Managed and SaaS** hosting. Dedicated and unknown hosting do not advertise
 discovery. Project and group discovery remain independently available; a denied
